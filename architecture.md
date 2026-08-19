@@ -168,7 +168,6 @@ Give the assistant session-level conversational memory.
 Add session state using:
 
 - Redis for the eventual production architecture, or
-- An in-memory dictionary for local development
 
 Sessions are keyed by a `session_id`.
 

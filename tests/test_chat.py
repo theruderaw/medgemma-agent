@@ -27,19 +27,22 @@ def test_chat_rejects_missing_message():
 
 
 def test_chat_returns_model_response(monkeypatch):
-    async def fake_chat(message, temperature=0.7):
-        assert message == "Hello"
+    async def fake_chat(messages, temperature=0.7):
+        assert messages[0]["role"] == "system"
+        assert messages[-1] == {"role": "user", "content": "Hello"}
         return "Hello! How can I help you?"
 
     monkeypatch.setattr("app.main.llm.chat", fake_chat)
     response = client.post(CHAT_URL, json={"message": "Hello"})
     assert response.status_code == 200
-    assert response.json()["response"] == "Hello! How can I help you?"
+    body = response.json()
+    assert body["response"] == "Hello! How can I help you?"
+    assert body["session_id"]
 
 
 @pytest.mark.asyncio
 async def test_chat_model_unreachable(monkeypatch):
-    async def fake_chat(message, temperature=0.7):
+    async def fake_chat(messages, temperature=0.7):
         raise httpx.ConnectError("connection refused")
 
     monkeypatch.setattr("app.main.llm.chat", fake_chat)
@@ -51,3 +54,53 @@ async def test_chat_model_unreachable(monkeypatch):
 def test_settings_defaults():
     assert settings.model_name == "qwen3:4b"
     assert settings.ollama_base_url == "http://localhost:11434"
+    assert settings.session_store_type == "memory"
+    assert settings.max_history_messages == 40
+    assert settings.max_context_messages == 20
+
+
+def test_chat_accumulates_history(monkeypatch):
+    turns = []
+
+    async def fake_chat(messages, temperature=0.7):
+        turns.append([m["role"] for m in messages])
+        return f"reply-{len(turns)}"
+
+    monkeypatch.setattr("app.main.llm.chat", fake_chat)
+
+    first = client.post(CHAT_URL, json={"message": "I've had a headache since yesterday."})
+    assert first.status_code == 200
+    session_id = first.json()["session_id"]
+
+    second = client.post(CHAT_URL, json={"message": "It's mostly on the left side.", "session_id": session_id})
+    assert second.status_code == 200
+
+    assert turns[0] == ["system", "user"]
+    assert turns[1] == ["system", "user", "assistant", "user"]
+    assert second.json()["session_id"] == session_id
+
+
+def test_session_reset(monkeypatch):
+    async def fake_chat(messages, temperature=0.7):
+        return "ok"
+
+    monkeypatch.setattr("app.main.llm.chat", fake_chat)
+
+    created = client.post(CHAT_URL, json={"message": "hi"})
+    session_id = created.json()["session_id"]
+
+    reset = client.delete(f"/sessions/{session_id}")
+    assert reset.status_code == 204
+
+    reused = client.post(CHAT_URL, json={"message": "hi", "session_id": session_id})
+    assert reused.status_code == 410
+
+
+def test_reset_unknown_session_returns_404():
+    response = client.delete("/sessions/nonexistent-session")
+    assert response.status_code == 404
+
+
+def test_chat_with_unknown_session_returns_410():
+    response = client.post(CHAT_URL, json={"message": "hi", "session_id": "unknown-session"})
+    assert response.status_code == 410

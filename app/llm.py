@@ -1,7 +1,6 @@
 import httpx
 
 from .config import settings
-from .prompts import SYSTEM_PROMPT
 
 
 class LLMClient:
@@ -9,13 +8,10 @@ class LLMClient:
         self.base_url = (base_url or settings.ollama_base_url).rstrip("/")
         self.timeout = timeout or settings.llm_timeout_seconds
 
-    async def chat(self, message: str, temperature: float = 0.7) -> str:
+    async def chat(self, messages: list[dict], temperature: float = 0.7) -> str:
         payload = {
             "model": settings.model_name,
-            "messages": [
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": message},
-            ],
+            "messages": messages,
             "temperature": temperature,
         }
         async with httpx.AsyncClient(timeout=self.timeout) as client:
