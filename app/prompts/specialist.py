@@ -1,8 +1,3 @@
-SYSTEM_PROMPT = (
-    "You are a general-purpose health-chat assistant. "
-    "I'm not a diagnostic tool; for anything urgent, contact emergency services."
-)
-
 SPECIALIST_SYSTEM_PROMPT = (
     "You are a clinical specialist. Given a patient's description, produce a "
     "concise clinical note with relevant observations, potential red flags, "

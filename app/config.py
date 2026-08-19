@@ -4,6 +4,8 @@ import os
 class Settings:
     model_name: str = os.getenv("MODEL_NAME", "qwen3:4b")
     specialist_model_name: str = os.getenv("SPECIALIST_MODEL_NAME", "medgemma1.5:4b")
+    triage_model_name: str = os.getenv("TRIAGE_MODEL_NAME", "qwen3:0.6b")
+    triage_enabled: bool = os.getenv("TRIAGE_ENABLED", "true").lower() in ("1", "true", "yes", "on")
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     llm_timeout_seconds: float = float(os.getenv("LLM_TIMEOUT_SECONDS", "120"))
     session_store_type: str = os.getenv("SESSION_STORE", "memory")

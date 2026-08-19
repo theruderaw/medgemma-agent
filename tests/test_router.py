@@ -2,13 +2,20 @@ import pytest
 
 from app.config import settings
 from app.main import app
-from app.router import CLINICAL_KEYWORDS, should_route_to_specialist
-from app.sessions import InMemorySessionStore, SessionManager
+from app.routes import CLINICAL_KEYWORDS, should_route_to_specialist
 from fastapi.testclient import TestClient
 
 client = TestClient(app)
 
 CHAT_URL = "/chat"
+
+
+@pytest.fixture(autouse=True)
+def mock_triage(monkeypatch):
+    async def fake_triage(message, temperature=0.0):
+        return '{"urgency": "general"}'
+
+    monkeypatch.setattr("app.services.chat.llm.triage", fake_triage)
 
 
 @pytest.mark.parametrize("keyword", CLINICAL_KEYWORDS)
@@ -32,7 +39,7 @@ def test_chat_routes_clinical_message_to_specialist_then_synthesis(monkeypatch):
         calls.append({"model": model, "messages": messages})
         return "clinical note" if model == settings.specialist_model_name else "synthesis reply"
 
-    monkeypatch.setattr("app.main.llm.chat", fake_chat)
+    monkeypatch.setattr("app.services.chat.llm.chat", fake_chat)
 
     response = client.post(CHAT_URL, json={"message": "I have a bad headache."})
     assert response.status_code == 200
@@ -45,9 +52,11 @@ def test_chat_routes_clinical_message_to_specialist_then_synthesis(monkeypatch):
 
     assert synthesis["model"] == settings.model_name
     roles = [m["role"] for m in synthesis["messages"]]
-    assert roles == ["system", "system", "user"]
-    assert "A clinical specialist model produced the following note" in synthesis["messages"][1]["content"]
-    assert "clinical note" in synthesis["messages"][1]["content"]
+    assert roles == ["system", "system", "system", "user"]
+    triage_msg, specialist_msg = synthesis["messages"][1], synthesis["messages"][2]
+    assert "urgency level: general" in triage_msg["content"]
+    assert "A clinical specialist model produced the following note" in specialist_msg["content"]
+    assert "clinical note" in specialist_msg["content"]
 
 
 def test_chat_keeps_general_message_on_direct_path(monkeypatch):
@@ -57,7 +66,7 @@ def test_chat_keeps_general_message_on_direct_path(monkeypatch):
         calls.append(model)
         return "hello back"
 
-    monkeypatch.setattr("app.main.llm.chat", fake_chat)
+    monkeypatch.setattr("app.services.chat.llm.chat", fake_chat)
 
     response = client.post(CHAT_URL, json={"message": "Hello there"})
     assert response.status_code == 200
@@ -72,7 +81,7 @@ def test_route_can_be_overridden_by_reset(monkeypatch):
         calls.append(model)
         return "ok"
 
-    monkeypatch.setattr("app.main.llm.chat", fake_chat)
+    monkeypatch.setattr("app.services.chat.llm.chat", fake_chat)
 
     r1 = client.post(CHAT_URL, json={"message": "My knee hurts"})
     session_id = r1.json()["session_id"]
@@ -89,7 +98,7 @@ async def test_specialist_error_maps_to_503(monkeypatch):
     async def fake_chat(messages, temperature=0.7, model=None):
         raise httpx.ConnectError("specialist down")
 
-    monkeypatch.setattr("app.main.llm.chat", fake_chat)
+    monkeypatch.setattr("app.services.chat.llm.chat", fake_chat)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as ac:
         response = await ac.post(CHAT_URL, json={"message": "I feel nauseous"})
     assert response.status_code == 503
