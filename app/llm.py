@@ -8,9 +8,16 @@ class LLMClient:
         self.base_url = (base_url or settings.ollama_base_url).rstrip("/")
         self.timeout = timeout or settings.llm_timeout_seconds
 
-    async def chat(self, messages: list[dict], temperature: float = 0.7) -> str:
+    async def chat(
+        self,
+        messages: list[dict],
+        temperature: float = 0.7,
+        model: str | None = None,
+    ) -> str:
+        model = model or settings.model_name
+        print(f"[llm] calling model: {model}")
         payload = {
-            "model": settings.model_name,
+            "model": model,
             "messages": messages,
             "temperature": temperature,
         }

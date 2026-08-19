@@ -3,8 +3,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from .config import settings
 from .llm import llm
-from .prompts import SYSTEM_PROMPT
+from .prompts import SPECIALIST_CONTEXT, SPECIALIST_SYSTEM_PROMPT, SYSTEM_PROMPT
+from .router import should_route_to_specialist
 from .sessions import SessionExpiredError, sessions
 
 
@@ -42,8 +44,24 @@ async def chat(request: ChatRequest) -> ChatResponse:
             session = await sessions.load_or_create(session_id, must_exist=provided_session_id)
             await sessions.append(session, "user", request.message)
             history = sessions.build_messages(session)
-            messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
-            text = await llm.chat(messages, temperature=request.temperature)
+
+            specialist_note = None
+            if should_route_to_specialist(request.message):
+                specialist_note = await llm.chat(
+                    [
+                        {"role": "system", "content": SPECIALIST_SYSTEM_PROMPT},
+                        {"role": "user", "content": request.message},
+                    ],
+                    model=settings.specialist_model_name,
+                )
+
+            messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+            if specialist_note:
+                messages.append(
+                    {"role": "system", "content": SPECIALIST_CONTEXT.format(note=specialist_note)}
+                )
+            messages += history
+            text = await llm.chat(messages, temperature=request.temperature, model=settings.model_name)
             await sessions.append(session, "assistant", text)
             await sessions.save(session)
     except SessionExpiredError:

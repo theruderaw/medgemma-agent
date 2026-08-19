@@ -27,7 +27,7 @@ def test_chat_rejects_missing_message():
 
 
 def test_chat_returns_model_response(monkeypatch):
-    async def fake_chat(messages, temperature=0.7):
+    async def fake_chat(messages, temperature=0.7, model=None):
         assert messages[0]["role"] == "system"
         assert messages[-1] == {"role": "user", "content": "Hello"}
         return "Hello! How can I help you?"
@@ -42,7 +42,7 @@ def test_chat_returns_model_response(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_chat_model_unreachable(monkeypatch):
-    async def fake_chat(messages, temperature=0.7):
+    async def fake_chat(messages, temperature=0.7, model=None):
         raise httpx.ConnectError("connection refused")
 
     monkeypatch.setattr("app.main.llm.chat", fake_chat)
@@ -62,17 +62,17 @@ def test_settings_defaults():
 def test_chat_accumulates_history(monkeypatch):
     turns = []
 
-    async def fake_chat(messages, temperature=0.7):
+    async def fake_chat(messages, temperature=0.7, model=None):
         turns.append([m["role"] for m in messages])
         return f"reply-{len(turns)}"
 
     monkeypatch.setattr("app.main.llm.chat", fake_chat)
 
-    first = client.post(CHAT_URL, json={"message": "I've had a headache since yesterday."})
+    first = client.post(CHAT_URL, json={"message": "Hello, how are you?"})
     assert first.status_code == 200
     session_id = first.json()["session_id"]
 
-    second = client.post(CHAT_URL, json={"message": "It's mostly on the left side.", "session_id": session_id})
+    second = client.post(CHAT_URL, json={"message": "Tell me more.", "session_id": session_id})
     assert second.status_code == 200
 
     assert turns[0] == ["system", "user"]
@@ -81,7 +81,7 @@ def test_chat_accumulates_history(monkeypatch):
 
 
 def test_session_reset(monkeypatch):
-    async def fake_chat(messages, temperature=0.7):
+    async def fake_chat(messages, temperature=0.7, model=None):
         return "ok"
 
     monkeypatch.setattr("app.main.llm.chat", fake_chat)

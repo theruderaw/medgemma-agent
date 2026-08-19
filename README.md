@@ -1,10 +1,11 @@
-# MedGemma Agent — Milestone 2
+# MedGemma Agent — Milestone 3
 
-Multi-turn conversational memory. A FastAPI chat backend backed by Qwen3-4B
-served via Ollama, with sessions keyed by a `session_id`.
+Two-model architecture with dumb keyword routing. A FastAPI chat backend backed
+by Qwen3-4B (orchestrator) and MedGemma 4B (clinical specialist), both served
+via Ollama, with sessions keyed by a `session_id`.
 
 ```
-User → FastAPI POST /chat → Load session history → Qwen3-4B (Ollama) → Append + Save → Response
+User → FastAPI POST /chat → Router → Qwen3-4B and/or MedGemma 4B → Response
 ```
 
 ## Conversation flow
@@ -14,29 +15,45 @@ flowchart TD
     USER["User Message"]
     SESSION["Session ID"]
     LOAD["Load Conversation History"]
-    APPEND_USER["Append User Message"]
+    ROUTER{"Keyword / Regex Router"}
     QWEN["Qwen3-4B"]
-    APPEND_ASSISTANT["Append Assistant Response"]
+    MED["MedGemma 4B"]
+    CONTEXT["Clinical Specialist Output"]
+    SYNTH["Qwen3-4B Synthesis"]
+    APPEND["Append Assistant Response"]
     RESPONSE["Return Response"]
 
     USER --> SESSION
     SESSION --> LOAD
-    LOAD --> APPEND_USER
-    APPEND_USER --> QWEN
-    QWEN --> APPEND_ASSISTANT
-    APPEND_ASSISTANT --> RESPONSE
+    LOAD --> ROUTER
+
+    ROUTER -->|"No match"| QWEN
+    ROUTER -->|"Clinical keyword"| MED
+    MED --> CONTEXT
+    CONTEXT --> SYNTH
+    QWEN --> APPEND
+    SYNTH --> APPEND
+    APPEND --> RESPONSE
+```
+
+When MedGemma is invoked, its output is passed to Qwen as context:
+
+```text
+A clinical specialist model produced the following note:
+
+[MedGemma output]
+
+Respond to the user using this information in clear, plain language.
 ```
 
 ## Prerequisites
 
-- Ollama installed and running with `qwen3:4b` pulled:
+- Ollama installed and running with both models pulled:
 
   ```sh
   ollama pull qwen3:4b
+  ollama pull medgemma:4b
   ```
-
-- (Optional) Redis for the production session store. By default sessions are
-  kept in memory and Redis is not required.
 
 ## Setup
 
@@ -81,8 +98,24 @@ curl -X POST http://localhost:8000/chat \
   -d '{"message": "It is mostly on the left side.", "session_id": "3f2a..."}'
 ```
 
-Qwen now sees the full conversation history (bounded, see
-[Context management](#context-management)).
+## Routing
+
+A naive keyword router decides whether a turn is clinical. It triggers on any of
+these words appearing in the message:
+
+```
+pain, hurts, symptom, fever, headache, bleeding, swelling, nausea, cough
+```
+
+- **Match** → MedGemma produces a clinical note, which is injected as a system
+  message into Qwen's context; Qwen synthesizes the final plain-language
+  response.
+- **No match** → Qwen answers directly.
+
+This router will misfire, miss some clinical questions, and trigger
+unnecessarily on some words. That is expected at this stage — the goal is to
+validate the two-model call pattern end-to-end. Context-aware routing replaces
+it in a later milestone.
 
 ## Endpoints
 
@@ -119,8 +152,8 @@ Errors:
 |---|---|
 | `422` | `message` is missing/empty, `temperature` out of range, or `session_id` is an empty string. |
 | `410` | A `session_id` was supplied but the session is unknown or expired. |
-| `502` | The model server returned an HTTP error. |
-| `503` | The model server is unreachable. |
+| `502` | A model server returned an HTTP error. |
+| `503` | A model server is unreachable. |
 
 ### `DELETE /sessions/{session_id}`
 
@@ -175,7 +208,8 @@ Environment variables (see `.env.example`):
 
 | Variable | Default | Description |
 |---|---|---|
-| `MODEL_NAME` | `qwen3:4b` | Model served by Ollama. |
+| `MODEL_NAME` | `qwen3:4b` | Orchestrator/synthesis model (Qwen). |
+| `SPECIALIST_MODEL_NAME` | `medgemma:4b` | Clinical specialist model (MedGemma). |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server. Uses its OpenAI-compatible `/v1` API. |
 | `LLM_TIMEOUT_SECONDS` | `120` | Timeout for model calls. |
 | `SESSION_STORE` | `memory` | `memory` or `redis`. |
@@ -203,9 +237,7 @@ otherwise.
 
 ## Scope
 
-This milestone intentionally has no MedGemma, routing, triage logic, or
-prescription reading. Context summarization is deferred to a later milestone.
-
-Concurrency is currently scoped to a single user at a time: per-session locks
-serialize turns on the same session, but there is no multi-tenant isolation,
-rate limiting, or horizontal scaling.
+This milestone intentionally has no real triage, emergency override, or
+prescription reading. Routing is a naive keyword match (no context awareness)
+and is expected to misfire. Multi-user concurrency is limited to one user at a
+time. Context summarization is deferred to a later milestone.
