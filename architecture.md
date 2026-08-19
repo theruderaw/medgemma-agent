@@ -79,7 +79,41 @@ Future modules follow the same infrastructure pattern without requiring changes 
 
 ---
 
+# 3. Routing & Versioning Strategy
+
+One gateway, one frontend, independently-versioned backend tracks behind it. The user never sees the seam; tracks move at different speeds and clear different review gates internally.
+
+```
+api.yourapp.com
+├── /v1/...            → conversation, triage, prescription reading, and future modules
+│                          (lab reports, medication interactions, discharge summaries)
+│                          fast iteration, per-module eval gate, MedGemma 4B/1.5 4B tier
+└── /imaging/v1/...     → x-ray / CT interpretation
+                           separate service, separate deploy cadence, MedGemma 27B tier,
+                           own regulatory review checkpoint before development starts
+```
+
+## Why Split Imaging Out
+
+Imaging sits in a meaningfully higher risk tier than the `/v1` modules — closer to diagnostic-device territory — and needs a larger model (27B, not 4B) to be worth shipping at all. Keeping it on its own path prefix means it can be held for review, re-training, or regulatory hold without taking triage/prescription/labs down with it.
+
+## Shared, Not Duplicated
+
+Auth, audit logging, and the guardrail engine are infrastructure — build once (Milestone 8), mount under both path prefixes. Do not fork these per-track; forking the audit trail is how the system ends up with two incompatible logs.
+
+## Frontend Implication
+
+If imaging results need a mandatory human-clinician-review step before reaching the patient, that gate should live in the shared gateway/frontend layer — not duplicated inside the imaging service — so it cannot be bypassed by calling `/imaging/v1/...` directly.
+
+## Hardening Is Per-Module, Not a One-Time Milestone
+
+Every module (triage, prescription, labs, interactions, imaging) needs its own eval set and its own red-team pass before pilot. Milestone 8 stands up the *infrastructure* for this (guardrail engine, observability, quantization), but each module still runs its own eval and red-team pass against that shared infrastructure rather than inheriting a single end-of-project hardening step.
+
+---
+
 # Milestone 1 — Talking Qwen, Nothing Else
+
+**API:** `/v1/chat`
 
 ## Goal
 
@@ -87,21 +121,21 @@ Build a working chat endpoint with Qwen and nothing else.
 
 ## Build
 
-- Stand up Qwen3-4B behind:
+- [ ] Stand up Qwen3-4B behind:
   - vLLM, or
   - Ollama for the fastest initial implementation
-- Expose an OpenAI-compatible endpoint.
-- Create a FastAPI backend.
-- Add a single endpoint:
+- [ ] Expose an OpenAI-compatible endpoint.
+- [ ] Create a FastAPI backend.
+- [ ] Add a single endpoint:
 
 ```http
 POST /chat
 ```
 
-- Forward the user's message to Qwen.
-- Return Qwen's response.
-- Keep the system stateless.
-- Do not add session state yet.
+- [ ] Forward the user's message to Qwen.
+- [ ] Return Qwen's response.
+- [ ] Keep the system stateless.
+- [ ] Do not add session state yet.
 
 ## Request Flow
 
@@ -159,6 +193,8 @@ The purpose of the milestone is to validate:
 
 # Milestone 2 — Multi-Turn Conversation
 
+**API:** `/v1/chat`
+
 ## Goal
 
 Give the assistant session-level conversational memory.
@@ -167,7 +203,7 @@ Give the assistant session-level conversational memory.
 
 Add session state using:
 
-- Redis for the eventual production architecture, or
+- [ ] Redis for the eventual production architecture, or
 
 Sessions are keyed by a `session_id`.
 
@@ -231,6 +267,8 @@ Qwen can now see the relevant conversation history.
 ---
 
 # Milestone 3 — Bring in MedGemma with Dumb Routing
+
+**API:** `/v1/chat` (internal MedGemma call, not yet its own endpoint)
 
 ## Goal
 
@@ -326,6 +364,8 @@ The goal is to prove that the specialist-model call pattern works end-to-end.
 ---
 
 # Milestone 4 — Real Triage Output + Hardcoded Escalation
+
+**API:** `/v1/triage`
 
 ## Goal
 
@@ -443,6 +483,8 @@ The deterministic emergency path is the safety floor.
 
 # Milestone 5 — Replace Keyword Routing with Function-Calling
 
+**API:** `/v1/chat`, `/v1/triage`
+
 ## Goal
 
 Replace the keyword router with contextual routing.
@@ -520,6 +562,8 @@ The classifier must never be able to route around the emergency layer.
 ---
 
 # Milestone 6 — Persistent Logging + Minimal Web UI
+
+**API:** `/v1/chat`, `/v1/triage` (shared gateway/auth/logging layer established here)
 
 ## Goal
 
@@ -615,6 +659,8 @@ This is the first point where structured feedback from testers becomes practical
 
 # Milestone 7 — Image Input for Visual Symptoms
 
+**API:** `/v1/triage` (extended, still `/v1`, still MedGemma 4B tier)
+
 ## Goal
 
 Extend triage to symptoms that are easier to show than describe.
@@ -693,6 +739,8 @@ This is a genuine capability expansion rather than merely another infrastructure
 ---
 
 # Milestone 8 — Guardrails, Evaluation & Hardening
+
+**API:** shared gateway layer, sits under `/v1/*`
 
 ## Goal
 
@@ -857,6 +905,8 @@ Legal/regulatory review should be performed against this milestone rather than a
 ---
 
 # Milestone 9 — Prescription Reading
+
+**API:** `/v1/prescription`
 
 ## Goal
 
@@ -1354,6 +1404,8 @@ flowchart TD
 
 # Milestone 10 — All Features Integrated & Production-Hardened
 
+**API:** `/v1/*` (triage + prescription + future modules, unified)
+
 ## Goal
 
 Make triage and prescription reading work together without routing conflicts.
@@ -1512,20 +1564,46 @@ Validate:
 
 ---
 
+# Imaging Track — X-ray / CT (separate from `/v1`)
+
+**API:** `/imaging/v1/...` — its own service, its own deploy pipeline, mounted on the shared gateway/auth/audit-log infra from Milestone 8.
+
+## Goal
+
+A higher-scrutiny module, decoupled from `/v1`'s fast release cadence.
+
+## Build
+
+- [ ] Regulatory/legal review of scope **before writing code** — this is the checkpoint that gates the rest of the track.
+- [ ] Stand up MedGemma 27B (not the 4B tier) — imaging performance at 4B is meaningfully behind 27B on this specific task.
+- [ ] Structured output schema for imaging findings, with a mandatory human-clinician-review flag before any result reaches a patient-facing view.
+- [ ] Route the human-review gate through the shared frontend/gateway layer, not duplicated inside the imaging service — so it can't be bypassed by hitting `/imaging/v1/...` directly.
+- [ ] Build an imaging-specific eval set (radiology benchmark data, e.g. MIMIC-CXR–style, plus institution-specific cases) and run a dedicated red-team pass, independent of every other module's eval work.
+- [ ] Set up a separate deploy pipeline so this service can be held for review or re-training without affecting `/v1/*`.
+
+## Viable System
+
+An imaging capability that can clear its own regulatory bar on its own timeline, without triage/prescription/labs/interactions waiting on it — and without inheriting a "ship fast" cadence it shouldn't have.
+
+**Estimated effort:** highly variable — regulatory review timeline dominates over build time here.
+
+---
+
 # Summary Table
 
-| # | Milestone | New Capability | Still Missing |
-|---:|---|---|---|
-| 1 | Talking Qwen | Basic chat | Memory, medical grounding, triage, prescription |
-| 2 | Multi-turn memory | Coherent conversation | Medical grounding, triage, prescription |
-| 3 | MedGemma + dumb routing | Clinically grounded specialist calls | Real triage, reliable routing |
-| 4 | Structured triage + red-flag override | Actual triage tool + deterministic safety floor | Reliable routing, UI, logging |
-| 5 | Function-calling routing | Context-aware specialist selection | UI, logging, prescription |
-| 6 | Logging + web UI | Deployable, auditable demo | Prescription, hardening |
-| 7 | Image input | Visual symptom triage | Prescription, full hardening |
-| 8 | Guardrails + eval + hardening | Supervised-pilot-ready triage system | Prescription |
-| 9 | Prescription reading | Medication extraction + safety checking | Combined integration |
-| 10 | Full integration | Complete multi-feature system | — |
+| # | Track | Milestone | New Capability | API | Still Missing |
+|---:|---|---|---|---|---|
+| 1 | `/v1` | Talking Qwen | Basic chat | `/v1/chat` | Memory, medical grounding, triage, prescription |
+| 2 | `/v1` | Multi-turn memory | Coherent conversation | `/v1/chat` | Medical grounding, triage, prescription |
+| 3 | `/v1` | MedGemma + dumb routing | Clinically grounded specialist calls | `/v1/chat` | Real triage, reliable routing |
+| 4 | `/v1` | Structured triage + red-flag override | Actual triage tool + deterministic safety floor | `/v1/triage` | Reliable routing, UI, logging |
+| 5 | `/v1` | Function-calling routing | Context-aware specialist selection | `/v1/chat`, `/v1/triage` | UI, logging, prescription |
+| 6 | `/v1` | Logging + web UI | Deployable, auditable demo | `/v1/*` | Prescription, hardening |
+| 7 | `/v1` | Image input | Visual symptom triage | `/v1/triage` | Prescription, full hardening |
+| 8 | `/v1` | Guardrails + eval + hardening | Supervised-pilot-ready triage system | `/v1/*` | Prescription |
+| 9 | `/v1` | Prescription reading | Medication extraction + safety checking | `/v1/prescription` | Combined integration |
+| 10 | `/v1` | Full integration | Complete multi-feature `/v1` system | `/v1/*` | Imaging |
+| — | `/imaging/v1` | X-ray / CT | Higher-risk, higher-model-tier, own regulatory gate | `/imaging/v1/*` | — |
 
 ---
 
@@ -1553,11 +1631,12 @@ flowchart LR
     SYNTH --> RESPONSE
 ```
 
-| Feature | Trigger | Specialist Model | Output Schema | Hardcoded Safety |
-|---|---|---|---|---|
-| **Lab Report Reading** | "Read my blood work" + image | MedGemma 1.5 | `{values: [{name, value, range, flag}], summary: str}` | Critical out-of-range values |
-| **Medication Interaction Check** | Multiple medications/images/text | MedGemma 1.5 | `{interactions: [{drug_a, drug_b, severity, description}], action: str}` | Known life-threatening interactions |
-| **Discharge Summary Reading** | "Explain my discharge papers" + image | MedGemma 1.5 | `{diagnosis: str, medications: [], follow_up: str, precautions: []}` | Critical omissions / dangerous combinations |
+| Feature | Trigger | Specialist Model | Output Schema | Hardcoded Safety | API |
+|---|---|---|---|---|---|
+| **Lab Report Reading** | "Read my blood work" + image | MedGemma 1.5 | `{values: [{name, value, range, flag}], summary: str}` | Critical out-of-range values | `/v1/labs` |
+| **Medication Interaction Check** | Multiple medications/images/text | MedGemma 1.5 | `{interactions: [{drug_a, drug_b, severity, description}], action: str}` | Known life-threatening interactions | `/v1/interactions` |
+| **Discharge Summary Reading** | "Explain my discharge papers" + image | MedGemma 1.5 | `{diagnosis: str, medications: [], follow_up: str, precautions: []}` | Critical omissions / dangerous combinations | `/v1/discharge` |
+| **X-ray / CT Interpretation** | Radiology image upload | MedGemma 27B | `{findings: [], impression: str, requires_clinician_review: true}` | Mandatory human review before patient-facing display | `/imaging/v1/scan` |
 
 ---
 
@@ -1735,12 +1814,14 @@ flowchart TD
 
     ROUTER{"Module Selection"}
 
-    TRIAGE["Symptom Triage"]
-    RX["Prescription Reading"]
-    LAB["Future: Lab Reports"]
-    INTERACTION["Future: Medication Interactions"]
+    TRIAGE["Symptom Triage /v1"]
+    RX["Prescription Reading /v1"]
+    LAB["Future: Lab Reports /v1"]
+    INTERACTION["Future: Medication Interactions /v1"]
+    IMAGING["X-ray / CT /imaging/v1"]
 
     MED["MedGemma 1.5 4B<br/>Multimodal Specialist"]
+    MED27["MedGemma 27B<br/>Imaging Specialist"]
 
     STRUCTURED["Task-Specific<br/>Structured Output"]
 
@@ -1771,13 +1852,16 @@ flowchart TD
     ROUTER -->|"Prescription"| RX
     ROUTER -->|"Lab Report"| LAB
     ROUTER -->|"Medication Interaction"| INTERACTION
+    ROUTER -->|"Imaging"| IMAGING
 
     TRIAGE --> MED
     RX --> MED
     LAB --> MED
     INTERACTION --> MED
+    IMAGING --> MED27
 
     MED --> STRUCTURED
+    MED27 --> STRUCTURED
     STRUCTURED --> SPECIALIST_SAFETY
     SPECIALIST_SAFETY --> SYNTH
 
