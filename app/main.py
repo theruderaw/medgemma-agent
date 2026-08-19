@@ -1,10 +1,13 @@
 import httpx
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from pathlib import Path
 
-from .llm import llm
-from .prompts import SYSTEM_PROMPT
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+
+from .schemas import ChatRequest, ChatResponse
+from .services.chat import run_chat_turn
 from .sessions import SessionExpiredError, sessions
 
 
@@ -16,16 +19,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="MedGemma Agent", version="0.2.0", lifespan=lifespan)
 
-
-class ChatRequest(BaseModel):
-    message: str = Field(min_length=1)
-    session_id: str | None = Field(default=None, min_length=1)
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+app.mount("/static", StaticFiles(directory=Path(__file__).resolve().parent.parent / "static"), name="static")
 
 
-class ChatResponse(BaseModel):
-    session_id: str
-    response: str
+@app.get("/", include_in_schema=False)
+async def index() -> FileResponse:
+    return FileResponse(Path(__file__).resolve().parent.parent / "static" / "index.html")
 
 
 @app.get("/health")
@@ -35,17 +34,12 @@ async def health() -> dict:
 
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest) -> ChatResponse:
-    provided_session_id = request.session_id is not None
-    session_id = request.session_id or sessions.new_id()
     try:
-        async with await sessions.lock(session_id):
-            session = await sessions.load_or_create(session_id, must_exist=provided_session_id)
-            await sessions.append(session, "user", request.message)
-            history = sessions.build_messages(session)
-            messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
-            text = await llm.chat(messages, temperature=request.temperature)
-            await sessions.append(session, "assistant", text)
-            await sessions.save(session)
+        result = await run_chat_turn(
+            request.message,
+            session_id=request.session_id,
+            temperature=request.temperature,
+        )
     except SessionExpiredError:
         raise HTTPException(
             status_code=410,
@@ -55,7 +49,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=502, detail=f"Model server error: {exc.response.status_code}")
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=503, detail=f"Model server unreachable: {exc}")
-    return ChatResponse(session_id=session.session_id, response=text)
+    return ChatResponse(session_id=result.session_id, response=result.response)
 
 
 @app.delete("/sessions/{session_id}", status_code=204)

@@ -1,10 +1,16 @@
-# MedGemma Agent — Milestone 2
+# MedGemma Agent — Milestone 4
 
-Multi-turn conversational memory. A FastAPI chat backend backed by Qwen3-4B
-served via Ollama, with sessions keyed by a `session_id`.
+Real triage output + hardcoded escalation. A FastAPI chat backend backed by
+three models served via Ollama:
+
+- **Qwen3-4B** — orchestrator / plain-language synthesis
+- **MedGemma 4B** — clinical specialist (free-form note)
+- **Qwen3-0.6B** — tiny triage classifier (urgency, schema-constrained)
+
+Plus a deterministic, non-model red-flag safety floor that runs on every turn.
 
 ```
-User → FastAPI POST /chat → Load session history → Qwen3-4B (Ollama) → Append + Save → Response
+User → Safety check → Triage (Qwen3-0.6B) → Router → MedGemma 4B → Qwen3-4B synthesis → Response
 ```
 
 ## Conversation flow
@@ -14,29 +20,115 @@ flowchart TD
     USER["User Message"]
     SESSION["Session ID"]
     LOAD["Load Conversation History"]
-    APPEND_USER["Append User Message"]
+    SAFETY["Hardcoded Red-Flag Check"]
+    EMERGENCY{"Emergency Match?"}
+    EMERGENCY_RESPONSE["Emergency Response"]
+    TRIAGE["Triage Classifier (Qwen3-0.6B)"]
+    ROUTER{"Keyword Router"}
     QWEN["Qwen3-4B"]
-    APPEND_ASSISTANT["Append Assistant Response"]
+    MED["MedGemma 4B"]
+    CONTEXT["Specialist Output"]
+    SYNTH["Qwen3-4B Synthesis"]
     RESPONSE["Return Response"]
 
     USER --> SESSION
     SESSION --> LOAD
-    LOAD --> APPEND_USER
-    APPEND_USER --> QWEN
-    QWEN --> APPEND_ASSISTANT
-    APPEND_ASSISTANT --> RESPONSE
+    LOAD --> SAFETY
+    SAFETY --> EMERGENCY
+
+    EMERGENCY -->|"Yes"| EMERGENCY_RESPONSE
+    EMERGENCY -->|"No"| TRIAGE
+    TRIAGE --> ROUTER
+
+    ROUTER -->|"No match"| QWEN
+    ROUTER -->|"Clinical keyword"| MED
+    MED --> CONTEXT
+    CONTEXT --> SYNTH
+    QWEN --> RESPONSE
+    SYNTH --> RESPONSE
+```
+
+## Safety floor
+
+A deterministic, non-model red-flag check runs **on every user turn** before any
+model is called. If it matches, the pipeline short-circuits and returns a fixed
+emergency response. The emergency decision never depends on Qwen, MedGemma,
+the triage model, routing, or confidence.
+
+Current red-flag categories:
+
+```
+chest pain, breathing difficulty, stroke signs, suicidal ideation,
+severe bleeding, anaphylaxis signs, seizure, unconsciousness
+```
+
+This is a reviewed-clinical-artifact placeholder and should be refined with
+clinical input.
+
+## Triage
+
+The tiny triage classifier (`TRIAGE_MODEL_NAME`, default `qwen3:0.6b`)
+classifies every non-emergency turn via Ollama's native `/api/chat` endpoint
+with a JSON-schema `format` constraint:
+
+```json
+{"urgency": "emergency" | "medical" | "general"}
+```
+
+The result is injected into Qwen's context so the final reply is calibrated to
+the urgency level. Triage is a soft signal for Qwen — the hardcoded red-flag
+check remains the only short-circuit.
+
+## Routing
+
+A naive keyword router decides whether a turn is clinical. It triggers on any of
+these words appearing in the message:
+
+```
+pain, hurts, symptom, fever, headache, bleeding, swelling, nausea, cough
+```
+
+- **Match** → MedGemma produces a clinical note, injected as a system message
+  into Qwen's context.
+- **No match** → Qwen answers directly.
+
+The router will misfire; that is expected at this stage.
+
+## Project layout
+
+```
+app/
+  main.py            # thin FastAPI endpoints + error mapping
+  schemas.py         # ChatRequest / ChatResponse
+  config.py          # environment-driven settings
+  llm.py             # LLMClient: chat (OpenAI-compat) + triage (native API)
+  context.py         # trim_context() context-window logic
+  safety.py          # deterministic red-flag floor (non-model)
+  triage.py          # urgency parsing / validation
+  prompts/           # prompts by domain
+    base.py          #   system prompt
+    specialist.py    #   MedGemma specialist prompt + context
+    triage.py        #   triage prompt + JSON schema + context
+  routes/            # routing decisions
+    keyword.py       #   naive keyword router
+  sessions/          # session memory
+    models.py        #   Session model + expiry error
+    stores.py        #   InMemory / Redis stores
+    manager.py       #   SessionManager + singleton
+  services/
+    chat.py          # run_chat_turn() orchestration (one full turn)
+tests/               # offline-safe (model calls mocked)
 ```
 
 ## Prerequisites
 
-- Ollama installed and running with `qwen3:4b` pulled:
+- Ollama installed and running with all three models pulled:
 
   ```sh
   ollama pull qwen3:4b
+  ollama pull medgemma:4b
+  ollama pull qwen3:0.6b
   ```
-
-- (Optional) Redis for the production session store. By default sessions are
-  kept in memory and Redis is not required.
 
 ## Setup
 
@@ -81,9 +173,6 @@ curl -X POST http://localhost:8000/chat \
   -d '{"message": "It is mostly on the left side.", "session_id": "3f2a..."}'
 ```
 
-Qwen now sees the full conversation history (bounded, see
-[Context management](#context-management)).
-
 ## Endpoints
 
 | Method | Path | Description |
@@ -119,8 +208,8 @@ Errors:
 |---|---|
 | `422` | `message` is missing/empty, `temperature` out of range, or `session_id` is an empty string. |
 | `410` | A `session_id` was supplied but the session is unknown or expired. |
-| `502` | The model server returned an HTTP error. |
-| `503` | The model server is unreachable. |
+| `502` | A model server returned an HTTP error. |
+| `503` | A model server is unreachable. |
 
 ### `DELETE /sessions/{session_id}`
 
@@ -175,8 +264,11 @@ Environment variables (see `.env.example`):
 
 | Variable | Default | Description |
 |---|---|---|
-| `MODEL_NAME` | `qwen3:4b` | Model served by Ollama. |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server. Uses its OpenAI-compatible `/v1` API. |
+| `MODEL_NAME` | `qwen3:4b` | Orchestrator/synthesis model (Qwen). |
+| `SPECIALIST_MODEL_NAME` | `medgemma:4b` | Clinical specialist model (MedGemma). |
+| `TRIAGE_MODEL_NAME` | `qwen3:0.6b` | Tiny triage classifier model. |
+| `TRIAGE_ENABLED` | `true` | Toggle the triage classifier + hardcoded escalation. |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server. |
 | `LLM_TIMEOUT_SECONDS` | `120` | Timeout for model calls. |
 | `SESSION_STORE` | `memory` | `memory` or `redis`. |
 | `REDIS_URL` | `redis://localhost:6379/0` | Redis connection when `SESSION_STORE=redis`. |
@@ -203,9 +295,7 @@ otherwise.
 
 ## Scope
 
-This milestone intentionally has no MedGemma, routing, triage logic, or
-prescription reading. Context summarization is deferred to a later milestone.
-
-Concurrency is currently scoped to a single user at a time: per-session locks
-serialize turns on the same session, but there is no multi-tenant isolation,
-rate limiting, or horizontal scaling.
+This milestone intentionally has no context-aware routing (function calling),
+prescription reading, or audit logging. The red-flag list is a placeholder
+pending clinical review. Multi-user concurrency is limited to one user at a
+time.
