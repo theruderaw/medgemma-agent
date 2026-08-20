@@ -36,6 +36,15 @@ Replaces `app/routes/keyword.py` (deleted).
   Returns `ChatResult(content, tool_calls)` so the caller can inspect whether a
   tool was requested.
 - `ChatResult` dataclass added.
+- **`extract_answer(content)`** — Qwen3 occasionally wraps its real reply in a
+  reasoning preamble and `<response>...</response>` tags. This helper returns
+  the inner answer when the tags are present, otherwise the trimmed content.
+  Applied to the direct general-path reply and defensively to the synthesized
+  reply in `app/services/chat.py`.
+- `chat()` and `chat_with_tools()` send `enable_thinking: False`: with thinking
+  enabled the reply text is unreliable (preamble, truncated or missing
+  answers); with it disabled the `<response>` tags are consistently present and
+  `extract_answer` cleanly recovers the final reply.
 
 ### Changed: `app/services/chat.py`
 
@@ -60,7 +69,8 @@ Per-turn flow:
   direct general path making no `llm.chat` call, reset allowing a clinical
   session to return to general, specialist failure → `503`.
 - `tests/test_chat.py` — mocks now target `llm.chat_with_tools`; general turns
-  assert the routing reply is returned directly.
+  assert the routing reply is returned directly; `extract_answer` unit tests
+  (tagged response extraction, plain-content passthrough).
 - `tests/test_triage.py` — triage urgency now reaches the routing context; the
   emergency short-circuit test also forbids `chat_with_tools`.
 

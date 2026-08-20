@@ -99,6 +99,13 @@ function-calling router can only produce `general` or `symptom_related`; the
 check, which runs first and short-circuits before any model call. The classifier
 can never route around the emergency layer.
 
+### Reply sanitization
+
+Qwen3 sometimes prefixes its reply with a reasoning preamble and wraps the real
+answer in `<response>...</response>` tags. `extract_answer` strips that and
+returns the clean reply. Model calls are made with `enable_thinking: false`, so
+the `<response>` wrapper is consistent and the reply is recoverable.
+
 ## Project layout
 
 ```
@@ -106,7 +113,7 @@ app/
   main.py            # thin FastAPI endpoints + error mapping
   schemas.py         # ChatRequest / ChatResponse
   config.py          # environment-driven settings
-  llm.py             # LLMClient: chat + chat_with_tools (OpenAI-compat) + triage (native API)
+  llm.py             # LLMClient: chat + chat_with_tools (OpenAI-compat) + triage (native API); extract_answer
   context.py         # trim_context() context-window logic
   safety.py          # deterministic red-flag floor (non-model)
   triage.py          # urgency parsing / validation
