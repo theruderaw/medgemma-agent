@@ -1,5 +1,9 @@
 import os
 
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 class Settings:
     model_name: str = os.getenv("MODEL_NAME", "qwen3:4b")
@@ -19,6 +23,10 @@ class Settings:
     max_history_messages: int = int(os.getenv("MAX_HISTORY_MESSAGES", "40"))
     max_context_messages: int = int(os.getenv("MAX_CONTEXT_MESSAGES", "20"))
     max_context_chars: int = int(os.getenv("MAX_CONTEXT_CHARS", "16000"))
+    processing_mode: str = os.getenv("PROCESSING_MODE", "sync")
+    job_result_expire_seconds: int = int(os.getenv("JOB_RESULT_EXPIRE_SECONDS", "3600"))
+    job_max_retries: int = int(os.getenv("JOB_MAX_RETRIES", "3"))
+    job_concurrency: int = int(os.getenv("JOB_CONCURRENCY", "1"))
 
 
 settings = Settings()

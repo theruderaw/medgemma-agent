@@ -26,6 +26,55 @@ class TurnResult:
     events: list[dict] | None = None
 
 
+async def run_emergency_turn(
+    message: str,
+    *,
+    session_id: str | None = None,
+) -> TurnResult:
+    """Handle a hardcoded red-flag match as one turn.
+
+    Shared by sync mode and the queued-mode API (which runs the safety floor
+    synchronously before enqueueing), so the emergency short-circuit is
+    identical regardless of processing mode: session append, save, and the
+    `safety_override` audit event are all recorded here.
+    """
+    provided_session_id = session_id is not None
+    resolved_id = session_id or sessions.new_id()
+    turn_id = uuid4().hex
+    events: list[dict] = []
+
+    async with await sessions.lock(resolved_id):
+        session = await sessions.load_or_create(resolved_id, must_exist=provided_session_id)
+        await sessions.append(session, "user", message)
+
+        category = detect_emergency(message)
+        response_text = EMERGENCY_RESPONSE.format(category=category)
+        await sessions.append(session, "assistant", response_text)
+        await sessions.save(session)
+
+        event = {
+            "module": "safety",
+            "event_type": "safety_override",
+            "payload": {"category": category, "message": message},
+            "turn_id": turn_id,
+        }
+        events.append(event)
+        await audit.append(
+            module=event["module"],
+            event_type=event["event_type"],
+            payload=event["payload"],
+            session_id=resolved_id,
+            turn_id=turn_id,
+        )
+
+    return TurnResult(
+        session_id=session.session_id,
+        response=response_text,
+        urgency=Urgency.EMERGENCY,
+        events=events,
+    )
+
+
 async def run_chat_turn(
     message: str,
     *,

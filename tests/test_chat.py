@@ -80,9 +80,13 @@ def test_settings_defaults():
     assert settings.triage_model_name == "qwen3:0.6b"
     assert settings.triage_enabled is True
     assert settings.ollama_base_url == "http://localhost:11434"
-    assert settings.session_store_type == "memory"
+    assert settings.session_store_type in ("memory", "redis", "postgres")
     assert settings.max_history_messages == 40
     assert settings.max_context_messages == 20
+    assert settings.processing_mode in ("sync", "queued")
+    assert settings.job_result_expire_seconds == 3600
+    assert settings.job_max_retries == 3
+    assert settings.job_concurrency == 1
 
 
 def test_chat_accumulates_history(monkeypatch):

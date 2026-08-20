@@ -23,3 +23,16 @@ class ChatResponse(BaseModel):
     response: str
     urgency: Urgency | None = None
     events: list[AuditEvent] = Field(default_factory=list)
+
+
+class QueuedChatResponse(BaseModel):
+    job_id: str
+    session_id: str
+    status: str
+
+
+class JobResponse(BaseModel):
+    job_id: str
+    status: str
+    result: ChatResponse | None = None
+    error: str | None = None
