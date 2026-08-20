@@ -7,10 +7,11 @@ with an append-only audit trail, optional Celery-backed worker queues that
 move inference off the HTTP request/response cycle, and a token-streaming
 React/Vite chat frontend with scannable urgency UI.
 
-**Milestone 6.3** — Frontend: a React + Vite chat UI with true token streaming
-(`POST /chat/stream`, SSE), markdown-rendered replies, per-turn pipeline-event
-timeline, session handling, and urgency visualization (banner for
-medical/general, acknowledgment modal for emergencies).
+**Milestone 6.4** — Structured logs + a hard audit guarantee: every log line is
+emitted through **structlog** (pretty console + `app/logs/app.jsonl`), and
+**no transaction happens without an explicit audit record appended to a JSON
+file** (`app/logs/audit.jsonl`, append-only, always on). LLM-generated content
+is trimmed to `AUDIT_LLM_CAP_CHARS` before it is persisted.
 
 ## Models
 
@@ -136,9 +137,10 @@ app/
     db.py            #   async engine + session factory (SQLModel)
     models.py        #   SQLModel tables: sessions / messages / audit_events
     context.py       #   trim_context() context-window logic
+    logging.py       #   structlog setup (console + app/logs/app.jsonl)
   api/               # HTTP contract
     schemas.py       #   ChatRequest / ChatResponse / JobResponse / AuditEvent
-  audit/             # append-only audit logger (Postgres / null)
+  audit/             # append-only audit logger (JSONL file + Postgres / composite)
   llm/               # LLM client + reply extraction
     client.py        #   LLMClient (OpenAI-compat + native triage API + chat_stream)
     parsing.py       #   extract_answer() + StreamExtractor (live wrapper stripping)
@@ -453,7 +455,8 @@ backoff and jitter, up to `JOB_MAX_RETRIES`. Non-transient HTTP statuses (e.g.
 Task results are stored in the Redis result backend with a
 `JOB_RESULT_EXPIRE_SECONDS` TTL (`result_expires`). Job results are a
 short-lived transport artifact and are **not** a substitute for the append-only
-Postgres audit trail, which remains the durable record of every turn.
+audit trail (the `audit.jsonl` file, mirrored to Postgres when enabled), which
+remains the durable record of every turn.
 
 A job registry key (`medgemma:job:{job_id}`, same TTL) lets `GET /jobs` tell a
 job that exists but is still pending apart from one that never existed.
@@ -524,24 +527,44 @@ The app runs `alembic upgrade head` automatically at startup (when Postgres
 storage or audit is enabled). Tests create tables directly from
 `SQLModel.metadata.create_all` and never run Alembic.
 
-### Audit logging (PostgreSQL)
+### Audit logging (JSONL file + PostgreSQL)
 
-When `SESSION_STORE=postgres` (or `AUDIT_ENABLED=true`), every turn appends
-immutable rows to the `audit_events` table. Events are tied to the session and
-turn and carry a module identifier:
+**Every transaction appends an immutable audit record to a JSON file**
+(`AUDIT_FILE`, default `app/logs/audit.jsonl`, one JSON object per line) —
+regardless of `AUDIT_ENABLED`, the session store, or processing mode. When
+`SESSION_STORE=postgres` (or `AUDIT_ENABLED=true`), the same event is also
+mirrored to the `audit_events` table. Events are tied to the session and turn
+and carry a module identifier:
 
 | Module | Event | Captured |
 |---|---|---|
 | `safety` | `safety_override` | Hardcoded red-flag escalation that bypassed the models |
 | `triage` | `triage_result` | Urgency classification + raw triage output |
 | `router` | `routing_decision` | Category, reason, raw routing content + tool calls |
-| `specialist` | `specialist_output` | MedGemma note retained in full (reason, note, model) |
+| `specialist` | `specialist_output` | MedGemma note + reason + model |
 | `chat` | `turn_completed` | Final response + temperature + model |
+| `session` | `session_created` / `session_reset` | Session lifecycle |
+| `job` | `job_started` / `job_enqueued` / `job_completed` / `job_failed` | Queued-mode job lifecycle |
 
-The audit trail is append-only by construction: the logger issues only `INSERT`
-statements and exposes no update or delete path, so records cannot be
-retroactively modified. Queued mode writes the same events — the worker task
-runs the identical turn path.
+LLM-generated content (raw triage output, routing reasoning, tool-call
+arguments, specialist notes, final replies) is trimmed to
+`AUDIT_LLM_CAP_CHARS` (default `1000`) before it is persisted, so the trail
+stays compact.
+
+The audit trail is append-only by construction: the JSONL sink appends a line
+per event (`O_APPEND` + lock, never an update or delete) and the Postgres
+logger issues only `INSERT`s, so records cannot be retroactively modified.
+Sink failures are logged but never break a transaction — a down Postgres can
+never lose the JSONL record. Queued mode writes the same events — the worker
+task runs the identical turn path.
+
+### Structured logging
+
+All logs go through **structlog**: a human-readable console renderer plus one
+JSON object per line in `app/logs/app.jsonl` (rotating). Uvicorn, Celery, and
+HTTPX events flow through the same formatter. `session_id` / `turn_id` /
+`job_id` are bound per turn/job and merged into every line, so each record is
+reconstructable (`session_id`, `turn_id`, `module`, `event_type`, `payload`).
 
 ## Configuration
 
@@ -562,7 +585,9 @@ cp .env.example .env
 | `LLM_TIMEOUT_SECONDS` | `120` | Timeout for model calls. |
 | `SESSION_STORE` | `memory` | `memory`, `redis`, or `postgres`. |
 | `DATABASE_URL` | `postgresql:///medgemma-agent` | PostgreSQL connection when `SESSION_STORE=postgres` (or audit enabled). Schema via Alembic. |
-| `AUDIT_ENABLED` | `true` if `SESSION_STORE=postgres` | Toggle the append-only audit log. |
+| `AUDIT_ENABLED` | `true` if `SESSION_STORE=postgres` | Mirror audit events to the Postgres `audit_events` table. The JSONL audit file is always written. |
+| `AUDIT_FILE` | `app/logs/audit.jsonl` | Append-only JSONL audit trail (always written). |
+| `AUDIT_LLM_CAP_CHARS` | `1000` | Trims LLM-generated content in audit records. |
 | `REDIS_URL` | `redis://localhost:6379/0` | Redis connection for session storage, and the Celery broker/result backend in queued mode. |
 | `SESSION_TIMEOUT_SECONDS` | `1800` | Idle timeout per session (sliding). |
 | `MAX_HISTORY_MESSAGES` | `40` | Max messages stored per session. |
@@ -598,5 +623,5 @@ a placeholder pending clinical review. Queued-mode concurrency is configurable
 via `JOB_CONCURRENCY` (default 1); a future multi-backend / remote-orchestration
 setup can raise it. There is no dead-letter queue, no push/websocket
 notification on job completion, and job results in Redis are short-lived — the
-Postgres audit trail is the durable record. Multi-user concurrency in sync mode
-is limited to one user at a time.
+append-only JSONL audit file (mirrored to Postgres when enabled) is the durable
+record. Multi-user concurrency in sync mode is limited to one user at a time.

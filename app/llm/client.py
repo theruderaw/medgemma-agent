@@ -5,7 +5,10 @@ import httpx
 from dataclasses import dataclass
 
 from ..core.config import settings
+from ..core.logging import get_logger
 from ..prompts.triage import TRIAGE_FORMAT, TRIAGE_PROMPT
+
+logger = get_logger("app.llm.client")
 
 
 @dataclass
@@ -26,7 +29,7 @@ class LLMClient:
         model: str | None = None,
     ) -> str:
         model = model or settings.model_name
-        print(f"[llm] calling model: {model}")
+        logger.info("llm.chat", model=model, temperature=temperature)
         payload = {
             "model": model,
             "messages": messages,
@@ -50,7 +53,7 @@ class LLMClient:
         Yields content deltas as the model generates them (``stream: true``).
         """
         model = model or settings.model_name
-        print(f"[llm] streaming model: {model}")
+        logger.info("llm.chat_stream", model=model, temperature=temperature)
         payload = {
             "model": model,
             "messages": messages,
@@ -93,7 +96,7 @@ class LLMClient:
         the caller can decide whether to execute a tool (e.g. the specialist).
         """
         model = model or settings.model_name
-        print(f"[llm] calling model with tools: {model}")
+        logger.info("llm.chat_with_tools", model=model, temperature=temperature)
         payload = {
             "model": model,
             "messages": messages,
@@ -119,7 +122,7 @@ class LLMClient:
         JSON schema defined by TRIAGE_FORMAT.
         """
         model = settings.triage_model_name
-        print(f"[llm] calling triage model: {model}")
+        logger.info("llm.triage", model=model, temperature=temperature)
         payload = {
             "model": model,
             "messages": [{"role": "user", "content": TRIAGE_PROMPT.format(message=message)}],

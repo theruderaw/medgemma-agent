@@ -1,15 +1,16 @@
 import asyncio
-import logging
 from dataclasses import asdict
 
 import httpx
+import structlog
 from celery import Celery
 
+from .audit import audit, trim_llm_payload
 from .core.config import settings
-from .core.logging import setup_logging
+from .core.logging import get_logger, setup_logging
 from .jobs import append_event, clear_events
 
-logger = logging.getLogger("app.worker")
+logger = get_logger("app.worker")
 
 setup_logging()
 
@@ -66,7 +67,16 @@ def process_turn(self, message: str, session_id: str | None = None, temperature:
 
     job_id = self.request.id
 
-    logger.info("turn started job=%s", job_id)
+    structlog.contextvars.bind_contextvars(job_id=job_id, session_id=session_id)
+    logger.info("job.started", job_id=job_id, session_id=session_id)
+    asyncio.run(
+        audit.append(
+            module="job",
+            event_type="job_started",
+            payload={"job_id": job_id, "message": message},
+            session_id=session_id,
+        )
+    )
 
     try:
         asyncio.run(clear_events(job_id))
@@ -90,13 +100,52 @@ def process_turn(self, message: str, session_id: str | None = None, temperature:
         )
     except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as exc:
         if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code not in (502, 503):
-            logger.warning("job failed permanently job=%s error=%s", job_id, _model_server_error(exc))
+            logger.warning("job.failed.permanent", job_id=job_id, error=_model_server_error(exc))
+            asyncio.run(
+                audit.append(
+                    module="job",
+                    event_type="job_failed",
+                    payload={"job_id": job_id, "error": _model_server_error(exc), "retryable": False},
+                    session_id=session_id,
+                )
+            )
+            structlog.contextvars.unbind_contextvars("job_id", "session_id")
             raise JobProcessingError(_model_server_error(exc)) from exc
-        logger.warning("job retryable error job=%s error=%s", job_id, _model_server_error(exc))
+        logger.warning("job.failed.retryable", job_id=job_id, error=_model_server_error(exc))
+        asyncio.run(
+            audit.append(
+                module="job",
+                event_type="job_failed",
+                payload={"job_id": job_id, "error": _model_server_error(exc), "retryable": True},
+                session_id=session_id,
+            )
+        )
+        structlog.contextvars.unbind_contextvars("job_id", "session_id")
         raise TransientModelError(_model_server_error(exc)) from exc
     except Exception as exc:
-        logger.error("job failed job=%s error=%s", job_id, exc)
+        logger.error("job.failed", job_id=job_id, error=repr(exc))
+        asyncio.run(
+            audit.append(
+                module="job",
+                event_type="job_failed",
+                payload={"job_id": job_id, "error": f"{type(exc).__name__}: {exc}", "retryable": False},
+                session_id=session_id,
+            )
+        )
+        structlog.contextvars.unbind_contextvars("job_id", "session_id")
         raise JobProcessingError(f"{type(exc).__name__}: {exc}") from exc
 
-    logger.info("turn completed job=%s", job_id)
+    asyncio.run(
+        audit.append(
+            module="job",
+            event_type="job_completed",
+            payload=trim_llm_payload(
+                {"job_id": job_id, "response": result.response, "session_id": result.session_id},
+                settings.audit_llm_cap_chars,
+            ),
+            session_id=result.session_id,
+        )
+    )
+    logger.info("job.completed", job_id=job_id, session_id=result.session_id, urgency=result.urgency)
+    structlog.contextvars.unbind_contextvars("job_id", "session_id")
     return asdict(result)
