@@ -7,5 +7,6 @@ sqlmodel==0.0.39
 alembic==1.19.1
 celery==5.6.3
 python-dotenv==1.2.3
+structlog==25.5.0
 pytest==9.1.1
 pytest-asyncio==1.4.0

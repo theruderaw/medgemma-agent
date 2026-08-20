@@ -3,8 +3,11 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from uuid import uuid4
 
-from ..audit import audit
+import structlog
+
+from ..audit import audit, trim_llm_payload
 from ..core.config import settings
+from ..core.logging import get_logger
 from ..llm import StreamExtractor, extract_answer, llm
 from ..prompts import (
     ROUTING_SYSTEM_PROMPT,
@@ -18,6 +21,8 @@ from ..routes import RouteCategory, parse_tool_calls
 from ..safety import EMERGENCY_RESPONSE, detect_emergency
 from ..sessions import sessions
 from ..triage import Urgency, parse_triage_urgency
+
+logger = get_logger("app.services.chat")
 
 
 @dataclass
@@ -46,6 +51,9 @@ async def run_emergency_turn(
     turn_id = uuid4().hex
     events: list[dict] = []
 
+    structlog.contextvars.bind_contextvars(session_id=resolved_id, turn_id=turn_id)
+    logger.info("turn.started", mode="emergency")
+
     async with await sessions.lock(resolved_id):
         session = await sessions.load_or_create(resolved_id, must_exist=provided_session_id)
         await sessions.append(session, "user", message)
@@ -58,7 +66,10 @@ async def run_emergency_turn(
         event = {
             "module": "safety",
             "event_type": "safety_override",
-            "payload": {"category": category, "message": message},
+            "payload": trim_llm_payload(
+                {"category": category, "message": message},
+                settings.audit_llm_cap_chars,
+            ),
             "turn_id": turn_id,
         }
         events.append(event)
@@ -71,6 +82,9 @@ async def run_emergency_turn(
             session_id=resolved_id,
             turn_id=turn_id,
         )
+
+    logger.info("turn.completed", mode="emergency", events=len(events))
+    structlog.contextvars.unbind_contextvars("session_id", "turn_id")
 
     return TurnResult(
         session_id=session.session_id,
@@ -105,7 +119,11 @@ async def run_chat_turn(
     events: list[dict] = []
     turn_urgency: Urgency | None = None
 
+    structlog.contextvars.bind_contextvars(session_id=resolved_id, turn_id=turn_id)
+    logger.info("turn.started", mode="chat")
+
     async def record(module: str, event_type: str, payload: dict) -> None:
+        payload = trim_llm_payload(payload, settings.audit_llm_cap_chars)
         event = {"module": module, "event_type": event_type, "payload": payload, "turn_id": turn_id}
         events.append(event)
         if on_event is not None:
@@ -117,6 +135,7 @@ async def run_chat_turn(
             session_id=session_id or resolved_id,
             turn_id=turn_id,
         )
+        logger.info("event.recorded", event_type=event_type, module=module)
 
     async with await sessions.lock(resolved_id):
         session = await sessions.load_or_create(resolved_id, must_exist=provided_session_id)
@@ -133,6 +152,8 @@ async def run_chat_turn(
                     "safety_override",
                     {"category": emergency, "message": message},
                 )
+                logger.info("turn.completed", mode="chat", result="emergency", events=len(events))
+                structlog.contextvars.unbind_contextvars("session_id", "turn_id")
                 return TurnResult(
                     session_id=session.session_id,
                     response=response_text,
@@ -228,6 +249,9 @@ async def run_chat_turn(
             "turn_completed",
             {"response": text, "temperature": temperature, "model": settings.model_name},
         )
+
+    logger.info("turn.completed", mode="chat", result="ok", events=len(events))
+    structlog.contextvars.unbind_contextvars("session_id", "turn_id")
 
     return TurnResult(
         session_id=session.session_id,

@@ -1,8 +1,11 @@
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 
 load_dotenv()
+
+AUDIT_FILE_DEFAULT = str(Path(__file__).resolve().parent.parent / "logs" / "audit.jsonl")
 
 
 class Settings:
@@ -18,6 +21,8 @@ class Settings:
         "AUDIT_ENABLED",
         "true" if os.getenv("SESSION_STORE", "memory") == "postgres" else "false",
     ).lower() in ("1", "true", "yes", "on")
+    audit_file: str = os.getenv("AUDIT_FILE", AUDIT_FILE_DEFAULT)
+    audit_llm_cap_chars: int = int(os.getenv("AUDIT_LLM_CAP_CHARS", "1000"))
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     session_timeout_seconds: float = float(os.getenv("SESSION_TIMEOUT_SECONDS", "1800"))
     max_history_messages: int = int(os.getenv("MAX_HISTORY_MESSAGES", "40"))

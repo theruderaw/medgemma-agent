@@ -1,6 +1,5 @@
 import asyncio
 import json
-import logging
 
 import httpx
 from alembic import command
@@ -13,8 +12,9 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api import ChatRequest, ChatResponse, JobResponse, QueuedChatResponse
+from .audit import audit, trim_llm_payload
 from .core.config import settings
-from .core.logging import setup_logging
+from .core.logging import get_logger, setup_logging
 from .jobs import exists as job_exists
 from .jobs import mark_enqueued
 from .jobs import read_events
@@ -23,7 +23,7 @@ from .services.chat import run_chat_turn, run_chat_turn_stream, run_emergency_tu
 from .sessions import SessionExpiredError, sessions
 from .worker import process_turn
 
-logger = logging.getLogger("app.main")
+logger = get_logger("app.main")
 
 setup_logging()
 
@@ -126,7 +126,7 @@ async def _stream_chat_turn(request: ChatRequest):
             + "\n\n"
         )
     except asyncio.CancelledError:
-        logger.info("chat stream closed")
+        logger.info("chat.stream.closed")
         raise
 
 
@@ -176,6 +176,12 @@ async def queued_chat(request: ChatRequest) -> QueuedChatResponse | ChatResponse
             session_id = sessions.new_id()
             session = await sessions.load_or_create(session_id, must_exist=False)
             await sessions.save(session)
+            await audit.append(
+                module="session",
+                event_type="session_created",
+                payload={"session_id": session_id},
+                session_id=session_id,
+            )
         else:
             session_id = request.session_id
             await sessions.load_or_create(session_id, must_exist=True)
@@ -185,6 +191,16 @@ async def queued_chat(request: ChatRequest) -> QueuedChatResponse | ChatResponse
             kwargs={"session_id": session_id, "temperature": request.temperature},
         )
         await mark_enqueued(task.id)
+        await audit.append(
+            module="job",
+            event_type="job_enqueued",
+            payload=trim_llm_payload(
+                {"job_id": task.id, "message": request.message, "session_id": session_id},
+                settings.audit_llm_cap_chars,
+            ),
+            session_id=session_id,
+        )
+        logger.info("job.enqueued", job_id=task.id, session_id=session_id)
     except SessionExpiredError:
         raise HTTPException(
             status_code=410,
@@ -238,7 +254,7 @@ async def job_events_stream(job_id: str, request: Request) -> StreamingResponse:
     except ValueError:
         start = 0
 
-    logger.info("job stream opened job=%s start=%s", job_id, start)
+    logger.info("job.stream.opened", job_id=job_id, start=start)
     return StreamingResponse(
         _stream_job_events(job_id, start=start),
         media_type="text/event-stream",
@@ -257,17 +273,17 @@ async def _stream_job_events(job_id: str, *, start: int = 0):
 
             if result.ready():
                 if result.successful():
-                    logger.info("job stream done job=%s", job_id)
+                    logger.info("job.stream.done", job_id=job_id)
                     yield f"event: result\ndata: {json.dumps(result.result)}\n\n"
                 else:
                     error = str(result.result) if result.result is not None else "unknown error"
-                    logger.warning("job stream failed job=%s error=%s", job_id, error)
+                    logger.warning("job.stream.failed", job_id=job_id, error=error)
                     yield f"event: error\ndata: {json.dumps({'error': error})}\n\n"
                 return
 
             await asyncio.sleep(_JOB_EVENT_POLL_SECONDS)
     except asyncio.CancelledError:
-        logger.info("job stream closed job=%s", job_id)
+        logger.info("job.stream.closed", job_id=job_id)
         raise
 
 
@@ -276,3 +292,10 @@ async def reset_session(session_id: str) -> None:
     removed = await sessions.reset(session_id)
     if not removed:
         raise HTTPException(status_code=404, detail="Session not found")
+    await audit.append(
+        module="session",
+        event_type="session_reset",
+        payload={"session_id": session_id},
+        session_id=session_id,
+    )
+    logger.info("session.reset", session_id=session_id)
