@@ -504,9 +504,9 @@ Qwen decides whether MedGemma is necessary based on the actual conversation.
 At minimum:
 
 ```text
-general
-symptom_related
 emergency
+medical
+general
 ```
 
 ## Architecture
@@ -521,8 +521,8 @@ flowchart TD
     QWEN["Qwen3-4B<br/>Function-Calling Router"]
     INTENT{"Intent"}
 
+    MEDICAL["Medical"]
     GENERAL["General / Administrative<br/>Qwen Direct"]
-    SYMPTOM["Symptom-Related"]
     MED["MedGemma Specialist"]
     SYNTH["Qwen Synthesis"]
     RESPONSE["Final Response"]
@@ -535,9 +535,10 @@ flowchart TD
 
     QWEN --> INTENT
 
+    INTENT -->|"Emergency"| EMERGENCY_PATH
+    INTENT -->|"Medical"| MEDICAL
     INTENT -->|"General"| GENERAL
-    INTENT -->|"Symptom"| SYMPTOM
-    SYMPTOM --> MED
+    MEDICAL --> MED
     MED --> SYNTH
     GENERAL --> RESPONSE
     SYNTH --> RESPONSE

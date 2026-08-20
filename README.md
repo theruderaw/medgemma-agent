@@ -1,16 +1,16 @@
-# MedGemma Agent — Milestone 4
+# MedGemma Agent — Milestone 5
 
-Real triage output + hardcoded escalation. A FastAPI chat backend backed by
+Contextual routing via function calling. A FastAPI chat backend backed by
 three models served via Ollama:
 
-- **Qwen3-4B** — orchestrator / plain-language synthesis
+- **Qwen3-4B** — orchestrator / router / plain-language synthesis
 - **MedGemma 4B** — clinical specialist (free-form note)
 - **Qwen3-0.6B** — tiny triage classifier (urgency, schema-constrained)
 
 Plus a deterministic, non-model red-flag safety floor that runs on every turn.
 
 ```
-User → Safety check → Triage (Qwen3-0.6B) → Router → MedGemma 4B → Qwen3-4B synthesis → Response
+User → Safety check → Triage (Qwen3-0.6B) → Qwen function-calling router → MedGemma 4B → Qwen3-4B synthesis → Response
 ```
 
 ## Conversation flow
@@ -24,8 +24,9 @@ flowchart TD
     EMERGENCY{"Emergency Match?"}
     EMERGENCY_RESPONSE["Emergency Response"]
     TRIAGE["Triage Classifier (Qwen3-0.6B)"]
-    ROUTER{"Keyword Router"}
-    QWEN["Qwen3-4B"]
+    ROUTER{"Qwen3-4B<br/>Function-Calling Router"}
+    INTENT{"Intent"}
+    QWEN["Qwen3-4B Direct Reply"]
     MED["MedGemma 4B"]
     CONTEXT["Specialist Output"]
     SYNTH["Qwen3-4B Synthesis"]
@@ -40,8 +41,9 @@ flowchart TD
     EMERGENCY -->|"No"| TRIAGE
     TRIAGE --> ROUTER
 
-    ROUTER -->|"No match"| QWEN
-    ROUTER -->|"Clinical keyword"| MED
+    ROUTER --> INTENT
+    INTENT -->|"General"| QWEN
+    INTENT -->|"Symptom-related"| MED
     MED --> CONTEXT
     CONTEXT --> SYNTH
     QWEN --> RESPONSE
@@ -81,18 +83,21 @@ check remains the only short-circuit.
 
 ## Routing
 
-A naive keyword router decides whether a turn is clinical. It triggers on any of
-these words appearing in the message:
+Routing is **contextual**: Qwen decides whether a turn needs the clinical
+specialist, using the full conversation rather than keywords. Qwen is given a
+`call_medical_specialist(reason: str)` function via Ollama's OpenAI-compatible
+tool-calling API:
 
-```
-pain, hurts, symptom, fever, headache, bleeding, swelling, nausea, cough
-```
+- **Tool called** → MedGemma produces a clinical note from the reason, injected
+  as a system message into Qwen's synthesis context.
+- **No tool call** → Qwen replies directly (single model call — faster general
+  conversation).
 
-- **Match** → MedGemma produces a clinical note, injected as a system message
-  into Qwen's context.
-- **No match** → Qwen answers directly.
-
-The router will misfire; that is expected at this stage.
+Routing categories are `general`, `symptom_related`, and `emergency`. The
+function-calling router can only produce `general` or `symptom_related`; the
+`emergency` category is owned exclusively by the independent hardcoded safety
+check, which runs first and short-circuits before any model call. The classifier
+can never route around the emergency layer.
 
 ## Project layout
 
@@ -101,16 +106,17 @@ app/
   main.py            # thin FastAPI endpoints + error mapping
   schemas.py         # ChatRequest / ChatResponse
   config.py          # environment-driven settings
-  llm.py             # LLMClient: chat (OpenAI-compat) + triage (native API)
+  llm.py             # LLMClient: chat + chat_with_tools (OpenAI-compat) + triage (native API)
   context.py         # trim_context() context-window logic
   safety.py          # deterministic red-flag floor (non-model)
   triage.py          # urgency parsing / validation
   prompts/           # prompts by domain
     base.py          #   system prompt
+    routing.py       #   routing prompt + specialist tool schema
     specialist.py    #   MedGemma specialist prompt + context
     triage.py        #   triage prompt + JSON schema + context
   routes/            # routing decisions
-    keyword.py       #   naive keyword router
+    function_calling.py  #   tool-call parsing + routing categories
   sessions/          # session memory
     models.py        #   Session model + expiry error
     stores.py        #   InMemory / Redis stores
@@ -295,7 +301,8 @@ otherwise.
 
 ## Scope
 
-This milestone intentionally has no context-aware routing (function calling),
-prescription reading, or audit logging. The red-flag list is a placeholder
-pending clinical review. Multi-user concurrency is limited to one user at a
-time.
+This milestone intentionally has no prescription reading or audit logging. The
+red-flag list is a placeholder pending clinical review. Multi-user concurrency
+is limited to one user at a time. Routing is contextual (function calling), but
+the specialist decision is a single tool call — multi-hop tool chains and
+persistent tool context are not yet supported.

@@ -3,6 +3,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import settings
+from app.llm import ChatResult
 from app.main import app
 from app.safety import RED_FLAG_RULES, detect_emergency
 from app.triage import parse_triage_urgency
@@ -60,6 +61,7 @@ def test_emergency_short_circuits_without_model_calls(monkeypatch):
 
     monkeypatch.setattr("app.services.chat.llm.chat", fail)
     monkeypatch.setattr("app.services.chat.llm.triage", fail)
+    monkeypatch.setattr("app.services.chat.llm.chat_with_tools", fail)
 
     response = client.post(CHAT_URL, json={"message": "I have chest pain and can't breathe"})
     assert response.status_code == 200
@@ -69,18 +71,18 @@ def test_emergency_short_circuits_without_model_calls(monkeypatch):
     assert body["session_id"]
 
 
-def test_triage_urgency_reaches_synthesis_context(monkeypatch):
+def test_triage_urgency_reaches_routing_context(monkeypatch):
     captured = {}
 
     async def fake_triage(message, temperature=0.0):
         return '{"urgency": "emergency"}'
 
-    async def fake_chat(messages, temperature=0.7, model=None):
+    async def fake_route(messages, tools, temperature=0.7, model=None):
         captured["messages"] = messages
-        return "ok"
+        return ChatResult(content="ok", tool_calls=[])
 
     monkeypatch.setattr("app.services.chat.llm.triage", fake_triage)
-    monkeypatch.setattr("app.services.chat.llm.chat", fake_chat)
+    monkeypatch.setattr("app.services.chat.llm.chat_with_tools", fake_route)
 
     response = client.post(CHAT_URL, json={"message": "It started after I ran"})
     assert response.status_code == 200
@@ -95,11 +97,11 @@ def test_triage_disabled_skips_emergency_and_triage(monkeypatch):
         called_triage["value"] = True
         return '{"urgency": "general"}'
 
-    async def fake_chat(messages, temperature=0.7, model=None):
-        return "ok"
+    async def fake_route(messages, tools, temperature=0.7, model=None):
+        return ChatResult(content="ok", tool_calls=[])
 
     monkeypatch.setattr("app.services.chat.llm.triage", fake_triage)
-    monkeypatch.setattr("app.services.chat.llm.chat", fake_chat)
+    monkeypatch.setattr("app.services.chat.llm.chat_with_tools", fake_route)
 
     response = client.post(CHAT_URL, json={"message": "I have chest pain"})
     assert response.status_code == 200
