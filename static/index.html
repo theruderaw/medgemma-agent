@@ -357,6 +357,7 @@
 
   function clearEvents() {
     eventsList.innerHTML = '';
+    renderedEvents.clear();
     const empty = document.createElement('div');
     empty.className = 'events-empty';
     empty.textContent = 'No pipeline events yet. Send a message to see routing, triage, and specialist activity.';
@@ -415,6 +416,60 @@
     }
   }
 
+  const renderedEvents = new Set();
+
+  function markRendered(ev) {
+    const key = JSON.stringify(ev);
+    if (renderedEvents.has(key)) return false;
+    renderedEvents.add(key);
+    return true;
+  }
+
+  function streamJob(jobId, typing) {
+    const es = new EventSource('/jobs/' + encodeURIComponent(jobId) + '/events');
+    let networkErrors = 0;
+
+    es.addEventListener('pipeline', (e) => {
+      let ev;
+      try { ev = JSON.parse(e.data); } catch { return; }
+      if (markRendered(ev)) eventsList.appendChild(renderEvent(ev));
+      eventsList.scrollTop = eventsList.scrollHeight;
+    });
+
+    es.addEventListener('result', (e) => {
+      let r;
+      try { r = JSON.parse(e.data); } catch { r = {}; }
+      typing.remove();
+      es.close();
+      setBusy(false);
+      setSession(r.session_id);
+      addMessage('assistant', r.response, r.urgency);
+      for (const ev of r.events || []) {
+        if (markRendered(ev)) eventsList.appendChild(renderEvent(ev));
+      }
+      eventsList.scrollTop = eventsList.scrollHeight;
+      input.focus();
+    });
+
+    es.addEventListener('error', (e) => {
+      if (e.data) {
+        let err;
+        try { err = JSON.parse(e.data).error || 'Job failed'; } catch { err = 'Job failed'; }
+        typing.remove();
+        es.close();
+        setBusy(false);
+        addMessage('error', err);
+        input.focus();
+      } else if (++networkErrors >= 5) {
+        typing.remove();
+        es.close();
+        setBusy(false);
+        addMessage('error', 'Lost connection to the job stream.');
+        input.focus();
+      }
+    });
+  }
+
   async function send() {
     const message = input.value.trim();
     if (!message || sendBtn.disabled) return;
@@ -429,6 +484,7 @@
     chat.scrollTop = chat.scrollHeight;
 
     setBusy(true);
+    let streamed = false;
     try {
       const res = await fetch('/chat', {
         method: 'POST',
@@ -436,21 +492,29 @@
         body: JSON.stringify({ message, session_id: sessionId }),
       });
       const data = await res.json().catch(() => ({}));
-      typing.remove();
       if (!res.ok) {
+        typing.remove();
         addMessage('error', data.detail || ('Request failed (' + res.status + ')'));
         if (res.status === 410) setSession(null);
         return;
       }
       setSession(data.session_id);
+      if (data.status === 'queued') {
+        streamed = true;
+        streamJob(data.job_id, typing);
+        return;
+      }
+      typing.remove();
       addMessage('assistant', data.response, data.urgency);
       addEvents(data.events);
     } catch (err) {
       typing.remove();
       addMessage('error', 'Could not reach the server: ' + err.message);
     } finally {
-      setBusy(false);
-      input.focus();
+      if (!streamed) {
+        setBusy(false);
+        input.focus();
+      }
     }
   }
 

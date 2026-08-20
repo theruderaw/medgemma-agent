@@ -1,3 +1,6 @@
+import json
+from collections.abc import AsyncIterator
+
 import httpx
 from dataclasses import dataclass
 
@@ -36,6 +39,47 @@ class LLMClient:
             data = response.json()
         return data["choices"][0]["message"]["content"]
 
+    async def chat_stream(
+        self,
+        messages: list[dict],
+        temperature: float = 0.7,
+        model: str | None = None,
+    ) -> AsyncIterator[str]:
+        """Stream a chat completion (OpenAI-compatible /v1/chat/completions).
+
+        Yields content deltas as the model generates them (``stream: true``).
+        """
+        model = model or settings.model_name
+        print(f"[llm] streaming model: {model}")
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": True,
+            "enable_thinking": False,
+        }
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with client.stream("POST", f"{self.base_url}/v1/chat/completions", json=payload) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    line = line.strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    choices = chunk.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta") or {}
+                    content = delta.get("content")
+                    if content:
+                        yield content
+
     async def chat_with_tools(
         self,
         messages: list[dict],
@@ -56,7 +100,7 @@ class LLMClient:
             "temperature": temperature,
             "tools": tools,
             "tool_choice": "auto",
-            # "enable_thinking": False,
+            "enable_thinking": False,
         }
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(f"{self.base_url}/v1/chat/completions", json=payload)

@@ -1,10 +1,17 @@
 import asyncio
+import logging
 from dataclasses import asdict
 
 import httpx
 from celery import Celery
 
 from .core.config import settings
+from .core.logging import setup_logging
+from .jobs import append_event, clear_events
+
+logger = logging.getLogger("app.worker")
+
+setup_logging()
 
 
 class TransientModelError(Exception):
@@ -57,14 +64,39 @@ def process_turn(self, message: str, session_id: str | None = None, temperature:
     """
     from .services.chat import run_chat_turn
 
+    job_id = self.request.id
+
+    logger.info("turn started job=%s", job_id)
+
+    try:
+        asyncio.run(clear_events(job_id))
+    except Exception:
+        pass
+
+    async def on_event(event: dict) -> None:
+        try:
+            await append_event(job_id, event)
+        except Exception:
+            pass
+
     try:
         result = asyncio.run(
-            run_chat_turn(message, session_id=session_id, temperature=temperature)
+            run_chat_turn(
+                message,
+                session_id=session_id,
+                temperature=temperature,
+                on_event=on_event,
+            )
         )
     except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as exc:
         if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code not in (502, 503):
+            logger.warning("job failed permanently job=%s error=%s", job_id, _model_server_error(exc))
             raise JobProcessingError(_model_server_error(exc)) from exc
+        logger.warning("job retryable error job=%s error=%s", job_id, _model_server_error(exc))
         raise TransientModelError(_model_server_error(exc)) from exc
     except Exception as exc:
+        logger.error("job failed job=%s error=%s", job_id, exc)
         raise JobProcessingError(f"{type(exc).__name__}: {exc}") from exc
+
+    logger.info("turn completed job=%s", job_id)
     return asdict(result)

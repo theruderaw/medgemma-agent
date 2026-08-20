@@ -192,6 +192,29 @@ cp .env.example .env
 
 ## Run
 
+### Frontend (React + Vite)
+
+The chat UI in `frontend/` talks to the API through Vite's dev proxy, so no CORS
+setup is needed. It mirrors the built-in `static/index.html` demo but replaces
+the SSE pipeline-event stream with polling of `GET /jobs/{job_id}`, and animates
+replies with a streaming (typewriter) effect.
+
+```sh
+cd frontend
+npm install
+npm run dev        # http://localhost:5173 (proxies /chat, /jobs, /sessions to the API)
+```
+
+Set `VITE_BACKEND_URL` to point the proxy at a non-default API origin
+(default `http://localhost:8000`). Build for production with `npm run build`.
+
+The UI implements chat, session handling (session id persisted in
+`localStorage`, "New chat" resets via `DELETE /sessions/{id}`), urgency
+visualization (colored badge per triage `urgency`), and both processing modes —
+sync responses render directly, queued responses poll the job until the result
+is ready. Image upload is not applicable: the current models are text-only (no
+vision).
+
 ### Sync mode (default)
 
 ```sh

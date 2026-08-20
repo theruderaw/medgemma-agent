@@ -1,9 +1,11 @@
+import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from uuid import uuid4
 
 from ..audit import audit
 from ..core.config import settings
-from ..llm import extract_answer, llm
+from ..llm import StreamExtractor, extract_answer, llm
 from ..prompts import (
     ROUTING_SYSTEM_PROMPT,
     SPECIALIST_CONTEXT,
@@ -30,6 +32,7 @@ async def run_emergency_turn(
     message: str,
     *,
     session_id: str | None = None,
+    on_event: Callable[[dict], Awaitable[None]] | None = None,
 ) -> TurnResult:
     """Handle a hardcoded red-flag match as one turn.
 
@@ -59,6 +62,8 @@ async def run_emergency_turn(
             "turn_id": turn_id,
         }
         events.append(event)
+        if on_event is not None:
+            await on_event(event)
         await audit.append(
             module=event["module"],
             event_type=event["event_type"],
@@ -80,6 +85,8 @@ async def run_chat_turn(
     *,
     session_id: str | None = None,
     temperature: float = 0.7,
+    on_event: Callable[[dict], Awaitable[None]] | None = None,
+    on_token: Callable[[str], Awaitable[None]] | None = None,
 ) -> TurnResult:
     """Execute one full chat turn.
 
@@ -88,6 +95,9 @@ async def run_chat_turn(
     route contextually via function calling: it either requests the clinical
     specialist or answers directly. Symptom-related turns get a MedGemma note
     injected before the final Qwen synthesis.
+
+    When ``on_token`` is supplied, the final reply is streamed token-by-token
+    through that callback instead of being returned in one block.
     """
     provided_session_id = session_id is not None
     resolved_id = session_id or sessions.new_id()
@@ -98,6 +108,8 @@ async def run_chat_turn(
     async def record(module: str, event_type: str, payload: dict) -> None:
         event = {"module": module, "event_type": event_type, "payload": payload, "turn_id": turn_id}
         events.append(event)
+        if on_event is not None:
+            await on_event(event)
         await audit.append(
             module=module,
             event_type=event_type,
@@ -191,9 +203,22 @@ async def run_chat_turn(
             if specialist_context:
                 messages.append({"role": "system", "content": specialist_context})
             messages += history
-            text = await llm.chat(messages, temperature=temperature, model=settings.model_name)
+            if on_token is not None:
+                cleaner = StreamExtractor()
+                async for delta in llm.chat_stream(
+                    messages, temperature=temperature, model=settings.model_name
+                ):
+                    chunk = cleaner.feed(delta)
+                    if chunk:
+                        await on_token(chunk)
+                text = cleaner.finish()
+            else:
+                text = await llm.chat(messages, temperature=temperature, model=settings.model_name)
         else:
             text = extract_answer(routing.content)
+            if on_token is not None:
+                for i in range(0, len(text), 3):
+                    await on_token(text[i : i + 3])
 
         text = extract_answer(text)
         await sessions.append(session, "assistant", text)
@@ -210,3 +235,59 @@ async def run_chat_turn(
         urgency=turn_urgency,
         events=events,
     )
+
+
+async def run_chat_turn_stream(
+    message: str,
+    *,
+    session_id: str | None = None,
+    temperature: float = 0.7,
+):
+    """Stream one chat turn to an SSE client.
+
+    Runs the same pipeline as :func:`run_chat_turn` on a background task and
+    yields SSE-style event dicts as the final reply is generated:
+
+    - ``{"type": "token", "content": ...}`` per token/Delta
+    - ``{"type": "done", "session_id", "response", "urgency", "events"}`` once
+      the turn completes
+    """
+    queue: asyncio.Queue[tuple[str, object]] = asyncio.Queue()
+
+    async def on_token(chunk: str) -> None:
+        await queue.put(("token", chunk))
+
+    async def runner() -> None:
+        try:
+            result = await run_chat_turn(
+                message,
+                session_id=session_id,
+                temperature=temperature,
+                on_token=on_token,
+            )
+            queue.put_nowait(("result", result))
+        except BaseException as exc:  # noqa: BLE001 - forwarded to the caller
+            queue.put_nowait(("error", exc))
+
+    task = asyncio.create_task(runner())
+    try:
+        while True:
+            kind, payload = await queue.get()
+            if kind == "token":
+                yield {"type": "token", "content": payload}
+            elif kind == "error":
+                raise payload
+            else:
+                result = payload
+                break
+    finally:
+        if not task.done():
+            task.cancel()
+
+    yield {
+        "type": "done",
+        "session_id": result.session_id,
+        "response": result.response,
+        "urgency": result.urgency.value if result.urgency is not None else None,
+        "events": result.events or [],
+    }
