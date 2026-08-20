@@ -19,42 +19,34 @@ def extract_answer(content: str) -> str:
 class StreamExtractor:
     """Strips the Qwen3 ``<response>...</response>`` wrapper from a live stream.
 
-    Emits content only after the opening tag and stops at the closing tag, so
-    callers can stream tokens to the client without ever surfacing the wrapper
-    markup. If the stream never contains the wrapper, content is emitted once
-    the buffered prefix exceeds a threshold.
+    With ``enable_thinking: false`` the wrapper is consistent: when present it
+    leads the content. The extractor holds back only the first few characters to
+    detect a leading ``<response>`` tag, then streams everything eagerly and
+    stops at the closing tag — so clients get real incremental tokens and never
+    see the wrapper markup.
     """
 
     OPEN_TAG = "<response>"
     CLOSE_TAG = "</response>"
-    BUFFER_LIMIT = 4096
 
     def __init__(self) -> None:
         self.buf = ""
-        self.past_open = False
         self.done = False
 
     def feed(self, delta: str) -> str:
         if self.done:
             return ""
         self.buf += delta
-        if not self.past_open:
-            idx = self.buf.find(self.OPEN_TAG)
-            if idx >= 0:
-                self.past_open = True
-                self.buf = self.buf[idx + len(self.OPEN_TAG):]
-            elif len(self.buf) > self.BUFFER_LIMIT:
-                self.past_open = True
-        if not self.past_open:
+        if len(self.buf) < len(self.OPEN_TAG):
             return ""
-        cidx = self.buf.find(self.CLOSE_TAG)
-        if cidx >= 0:
-            out = self.buf[:cidx]
-            self.buf = ""
-            self.done = True
-            return out
+        if self.buf.startswith(self.OPEN_TAG):
+            self.buf = self.buf[len(self.OPEN_TAG):]
         out = self.buf
         self.buf = ""
+        cidx = out.find(self.CLOSE_TAG)
+        if cidx >= 0:
+            out = out[:cidx]
+            self.done = True
         return out
 
     def finish(self) -> str:
