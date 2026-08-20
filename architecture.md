@@ -593,7 +593,37 @@ The application should treat audit records as append-only.
 
 ---
 
-## 6.2 Frontend
+## 6.2 Worker Queues
+
+Move chat-turn processing off the request/response cycle and onto a queue, so
+inference runs in a dedicated worker instead of inline inside the HTTP request.
+
+Add:
+
+- Optional queued processing mode (`PROCESSING_MODE=sync|queued`), sync remains default
+- Job queue backed by Celery, with Redis as broker and result backend
+- Dedicated worker process, concurrency fixed at 1 to match single-GPU/VRAM constraint
+- `POST /chat` in queued mode returns `202` with a `job_id` (Celery task id) instead of the full response
+- `GET /jobs/{job_id}` for polling task status and result via Celery's result backend
+- Retry policy for transient model-server failures only (unreachable, timeout, `502`/`503`), via Celery's built-in `autoretry_for`/backoff
+- Task results stored in Redis with TTL (`result_expires`); not a substitute for the Postgres audit trail
+
+The safety floor still runs synchronously before a turn is enqueued — the
+emergency short-circuit never goes through the queue.
+
+Worker task must call the same turn-processing path used by sync mode, so
+safety/triage/routing/audit behavior is identical in both modes.
+
+Queued mode requires Redis (or another supported broker); not defined against
+in-memory or Postgres-only session storage.
+
+Out of scope: dead-letter queue, push/websocket notification on completion,
+concurrency above 1 (reserved for a future multi-backend/remote-orchestration
+setup).
+
+---
+
+## 6.3 Frontend
 
 Build a minimal React/Next.js interface.
 
@@ -634,7 +664,7 @@ flowchart TD
     MED --> DB
 ```
 
-## 6.3 Urgency UI
+## 6.4 Urgency UI
 
 Triage results should be visually scannable.
 

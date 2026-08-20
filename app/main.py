@@ -4,14 +4,18 @@ from alembic.config import Config
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .api import ChatRequest, ChatResponse
+from .api import ChatRequest, ChatResponse, JobResponse, QueuedChatResponse
 from .core.config import settings
-from .services.chat import run_chat_turn
+from .jobs import exists as job_exists
+from .jobs import mark_enqueued
+from .safety import detect_emergency
+from .services.chat import run_chat_turn, run_emergency_turn
 from .sessions import SessionExpiredError, sessions
+from .worker import process_turn
 
 
 def _run_migrations() -> None:
@@ -21,13 +25,15 @@ def _run_migrations() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if settings.processing_mode == "queued" and settings.session_store_type != "redis":
+        raise RuntimeError("PROCESSING_MODE=queued requires SESSION_STORE=redis")
     if settings.session_store_type == "postgres" or settings.audit_enabled:
         _run_migrations()
     yield
     await sessions.close()
 
 
-app = FastAPI(title="MedGemma Agent", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="MedGemma Agent", version="0.3.0", lifespan=lifespan)
 
 app.mount("/static", StaticFiles(directory=Path(__file__).resolve().parent.parent / "static"), name="static")
 
@@ -42,8 +48,17 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
-@app.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest) -> ChatResponse:
+@app.post("/chat")
+async def chat(request: ChatRequest, response: Response):
+    if settings.processing_mode == "queued":
+        result = await queued_chat(request)
+        if isinstance(result, QueuedChatResponse):
+            response.status_code = 202
+        return result
+    return await sync_chat(request)
+
+
+async def sync_chat(request: ChatRequest) -> ChatResponse:
     try:
         result = await run_chat_turn(
             request.message,
@@ -65,6 +80,68 @@ async def chat(request: ChatRequest) -> ChatResponse:
         urgency=result.urgency,
         events=result.events or [],
     )
+
+
+async def queued_chat(request: ChatRequest) -> QueuedChatResponse | ChatResponse:
+    """Queued-mode `/chat`.
+
+    The deterministic safety floor runs synchronously first; an emergency match
+    short-circuits with a full synchronous response and is never enqueued.
+    Otherwise the turn is enqueued and a `202` with the Celery task id is
+    returned; poll `GET /jobs/{job_id}` for the result.
+    """
+    if settings.triage_enabled and detect_emergency(request.message) is not None:
+        result = await run_emergency_turn(request.message, session_id=request.session_id)
+        return ChatResponse(
+            session_id=result.session_id,
+            response=result.response,
+            urgency=result.urgency,
+            events=result.events or [],
+        )
+
+    try:
+        if request.session_id is None:
+            session_id = sessions.new_id()
+            session = await sessions.load_or_create(session_id, must_exist=False)
+            await sessions.save(session)
+        else:
+            session_id = request.session_id
+            await sessions.load_or_create(session_id, must_exist=True)
+
+        task = process_turn.apply_async(
+            args=[request.message],
+            kwargs={"session_id": session_id, "temperature": request.temperature},
+        )
+        await mark_enqueued(task.id)
+    except SessionExpiredError:
+        raise HTTPException(
+            status_code=410,
+            detail="Session expired or not found. Start a new session.",
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Job queue unavailable: {exc}")
+
+    return QueuedChatResponse(job_id=task.id, session_id=session_id, status="queued")
+
+
+@app.get("/jobs/{job_id}", response_model=JobResponse)
+async def job_status(job_id: str) -> JobResponse:
+    result = process_turn.AsyncResult(job_id)
+    meta = result.backend.get_task_meta(job_id)
+    if meta is None and not await job_exists(job_id):
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    if not result.ready():
+        status = "processing" if result.state == "STARTED" else "pending"
+        return JobResponse(job_id=job_id, status=status)
+
+    if result.successful():
+        return JobResponse(job_id=job_id, status="success", result=result.result)
+
+    error = str(result.result) if result.result is not None else "unknown error"
+    if error.startswith("model-server-"):
+        return JobResponse(job_id=job_id, status="failure", error=error)
+    raise HTTPException(status_code=500, detail=f"Job failed: {error}")
 
 
 @app.delete("/sessions/{session_id}", status_code=204)
