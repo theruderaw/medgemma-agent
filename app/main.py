@@ -1,4 +1,6 @@
 import httpx
+from alembic import command
+from alembic.config import Config
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -6,13 +8,21 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from .schemas import ChatRequest, ChatResponse
+from .api import ChatRequest, ChatResponse
+from .core.config import settings
 from .services.chat import run_chat_turn
 from .sessions import SessionExpiredError, sessions
 
 
+def _run_migrations() -> None:
+    cfg = Config(str(Path(__file__).resolve().parent.parent / "alembic.ini"))
+    command.upgrade(cfg, "head")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if settings.session_store_type == "postgres" or settings.audit_enabled:
+        _run_migrations()
     yield
     await sessions.close()
 
@@ -49,7 +59,12 @@ async def chat(request: ChatRequest) -> ChatResponse:
         raise HTTPException(status_code=502, detail=f"Model server error: {exc.response.status_code}")
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=503, detail=f"Model server unreachable: {exc}")
-    return ChatResponse(session_id=result.session_id, response=result.response)
+    return ChatResponse(
+        session_id=result.session_id,
+        response=result.response,
+        urgency=result.urgency,
+        events=result.events or [],
+    )
 
 
 @app.delete("/sessions/{session_id}", status_code=204)

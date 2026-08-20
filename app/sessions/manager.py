@@ -1,15 +1,18 @@
 import asyncio
 import uuid
 
-from ..config import settings
-from ..context import trim_context
+from ..core.config import settings
+from ..core.context import trim_context
 from .models import Session, SessionExpiredError
+from .postgres import PostgresSessionStore
 from .stores import InMemorySessionStore, RedisSessionStore, SessionStore
 
 
 def build_store() -> SessionStore:
     if settings.session_store_type == "redis":
         return RedisSessionStore(settings.redis_url, settings.session_timeout_seconds)
+    if settings.session_store_type == "postgres":
+        return PostgresSessionStore(settings.database_url, settings.session_timeout_seconds)
     return InMemorySessionStore(settings.session_timeout_seconds)
 
 
@@ -60,7 +63,7 @@ class SessionManager:
         )
 
     async def save(self, session: Session) -> None:
-        if len(session.messages) > self.max_history_messages:
+        if not self._store.retains_full_history and len(session.messages) > self.max_history_messages:
             session.messages = session.messages[-self.max_history_messages:]
         await self._store.save(session)
 

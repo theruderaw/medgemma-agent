@@ -58,6 +58,108 @@
     flex-direction: column;
     gap: 12px;
   }
+  .layout {
+    flex: 1;
+    display: flex;
+    overflow: hidden;
+  }
+  .events-panel {
+    width: 340px;
+    flex-shrink: 0;
+    background: var(--panel);
+    border-left: 1px solid var(--panel-2);
+    overflow-y: auto;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .events-panel h2 {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin: 0;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--panel-2);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .events-empty {
+    color: var(--muted);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .evt {
+    background: var(--panel-2);
+    border-radius: 10px;
+    padding: 8px 10px;
+    font-size: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    border: 1px solid transparent;
+    border-left-width: 3px;
+  }
+  .evt.safety { border-left-color: var(--danger); }
+  .evt.triage { border-left-color: #a78bfa; }
+  .evt.router { border-left-color: var(--accent); }
+  .evt.specialist { border-left-color: var(--ok); }
+  .evt.chat { border-left-color: var(--muted); }
+  .evt-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .evt-module {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    font-weight: 700;
+    color: var(--accent);
+  }
+  .evt-type {
+    font-family: monospace;
+    font-size: 11px;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .evt-body {
+    color: var(--text);
+    line-height: 1.4;
+    word-wrap: break-word;
+    max-height: 96px;
+    overflow-y: auto;
+  }
+  .evt-body pre {
+    margin: 0;
+    font-family: inherit;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+  .evt-body .kv { display: flex; gap: 6px; }
+  .evt-body .kv b { color: var(--muted); font-weight: 600; }
+  .evt-raw {
+    font-family: monospace;
+    font-size: 11px;
+    color: var(--muted);
+    background: var(--bg);
+    border-radius: 6px;
+    padding: 6px;
+    max-height: 120px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+  .evt-time {
+    font-size: 10px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
   .msg {
     max-width: 70%;
     padding: 10px 14px;
@@ -69,6 +171,27 @@
   .msg.user { align-self: flex-end; background: var(--user); }
   .msg.assistant { align-self: flex-start; background: var(--assistant); }
   .msg.error { align-self: center; background: var(--danger); max-width: 90%; font-size: 13px; }
+  .urgency {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text);
+    background: var(--bg);
+    border-radius: 999px;
+    padding: 2px 10px;
+    margin-bottom: 6px;
+  }
+  .urgency .u-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+  .urgency.emergency { border: 1px solid var(--danger); }
+  .urgency.emergency .u-dot { background: var(--danger); }
+  .urgency.medical { border: 1px solid #f59e0b; }
+  .urgency.medical .u-dot { background: #f59e0b; }
+  .urgency.general { border: 1px solid var(--ok); }
+  .urgency.general .u-dot { background: var(--ok); }
   .msg .role {
     display: block;
     font-size: 11px;
@@ -140,7 +263,13 @@
     </div>
   </header>
 
-  <main id="chat" aria-live="polite"></main>
+  <div class="layout">
+    <main id="chat" aria-live="polite"></main>
+    <aside class="events-panel" id="eventsPanel" aria-label="Pipeline events">
+      <h2>Pipeline events</h2>
+      <div id="eventsList"></div>
+    </aside>
+  </div>
 
   <footer>
     <textarea id="input" rows="1" placeholder="Describe your symptoms or ask a health question…" aria-label="Message"></textarea>
@@ -156,8 +285,83 @@
   const sessionBadge = document.getElementById('sessionBadge');
   const statusDot = document.getElementById('statusDot');
   const statusText = document.getElementById('statusText');
+  const eventsList = document.getElementById('eventsList');
 
   let sessionId = null;
+
+  function esc(s) {
+    const div = document.createElement('div');
+    div.textContent = s == null ? '' : String(s);
+    return div.innerHTML;
+  }
+
+  function renderEvent(ev) {
+    const el = document.createElement('div');
+    el.className = 'evt ' + ev.module;
+
+    const top = document.createElement('div');
+    top.className = 'evt-top';
+    const module = document.createElement('span');
+    module.className = 'evt-module';
+    module.textContent = ev.module;
+    const type = document.createElement('span');
+    type.className = 'evt-type';
+    type.textContent = ev.event_type;
+    top.appendChild(module);
+    top.appendChild(type);
+
+    const body = document.createElement('div');
+    body.className = 'evt-body';
+    const p = ev.payload || {};
+    switch (ev.event_type) {
+      case 'safety_override':
+        body.innerHTML = '<div class="kv"><b>category</b><span>' + esc(p.category) + '</span></div>';
+        break;
+      case 'triage_result':
+        body.innerHTML = '<div class="kv"><b>urgency</b><span>' + esc(p.urgency) + '</span></div>';
+        break;
+      case 'routing_decision':
+        body.innerHTML = '<div class="kv"><b>category</b><span>' + esc(p.category) + '</span></div>' +
+          (p.reason ? '<div class="kv"><b>reason</b><span>' + esc(p.reason) + '</span></div>' : '');
+        break;
+      case 'specialist_output':
+        body.innerHTML = '<div class="kv"><b>model</b><span>' + esc(p.model) + '</span></div>' +
+          (p.reason ? '<div class="kv"><b>reason</b><span>' + esc(p.reason) + '</span></div>' : '') +
+          '<div class="evt-raw">' + esc(p.note || '') + '</div>';
+        break;
+      case 'turn_completed':
+        body.innerHTML = '<div class="kv"><b>model</b><span>' + esc(p.model) + '</span></div>' +
+          '<div class="evt-raw">' + esc(p.response || '') + '</div>';
+        break;
+      default:
+        body.innerHTML = '<div class="evt-raw">' + esc(JSON.stringify(p)) + '</div>';
+    }
+
+    const time = document.createElement('span');
+    time.className = 'evt-time';
+    time.textContent = new Date().toLocaleTimeString();
+
+    el.appendChild(top);
+    el.appendChild(body);
+    el.appendChild(time);
+    return el;
+  }
+
+  function addEvents(events) {
+    if (!events || !events.length) return;
+    for (const ev of events) {
+      eventsList.appendChild(renderEvent(ev));
+    }
+    eventsList.scrollTop = eventsList.scrollHeight;
+  }
+
+  function clearEvents() {
+    eventsList.innerHTML = '';
+    const empty = document.createElement('div');
+    empty.className = 'events-empty';
+    empty.textContent = 'No pipeline events yet. Send a message to see routing, triage, and specialist activity.';
+    eventsList.appendChild(empty);
+  }
 
   async function checkHealth() {
     try {
@@ -171,13 +375,22 @@
     }
   }
 
-  function addMessage(role, text) {
+  function addMessage(role, text, urgency) {
     const el = document.createElement('div');
     el.className = 'msg ' + role;
     const label = document.createElement('span');
     label.className = 'role';
     label.textContent = role === 'user' ? 'You' : (role === 'error' ? 'Error' : 'Assistant');
     el.appendChild(label);
+    if (role === 'assistant' && urgency) {
+      const badge = document.createElement('span');
+      badge.className = 'urgency ' + urgency;
+      const dot = document.createElement('span');
+      dot.className = 'u-dot';
+      badge.appendChild(dot);
+      badge.appendChild(document.createTextNode(urgency));
+      el.appendChild(badge);
+    }
     el.appendChild(document.createTextNode(text));
     chat.appendChild(el);
     chat.scrollTop = chat.scrollHeight;
@@ -230,7 +443,8 @@
         return;
       }
       setSession(data.session_id);
-      addMessage('assistant', data.response);
+      addMessage('assistant', data.response, data.urgency);
+      addEvents(data.events);
     } catch (err) {
       typing.remove();
       addMessage('error', 'Could not reach the server: ' + err.message);
@@ -246,6 +460,7 @@
       await fetch('/sessions/' + encodeURIComponent(sessionId), { method: 'DELETE' });
     } finally {
       setSession(null);
+      clearEvents();
     }
   }
 
@@ -264,6 +479,7 @@
 
   checkHealth();
   input.focus();
+  clearEvents();
 })();
 </script>
 </body>

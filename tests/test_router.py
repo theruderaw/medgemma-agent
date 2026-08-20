@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-from app.config import settings
+from app.core.config import settings
 from app.llm import ChatResult
 from app.main import app
 from app.routes import RouteCategory, parse_tool_calls

@@ -1,10 +1,18 @@
 import json
 import re
+from enum import StrEnum
 
-VALID_URGENCIES = ("emergency", "medical", "general")
+
+class Urgency(StrEnum):
+    EMERGENCY = "emergency"
+    MEDICAL = "medical"
+    GENERAL = "general"
 
 
-def parse_triage_urgency(raw: str) -> str:
+VALID_URGENCIES = tuple(u.value for u in Urgency)
+
+
+def parse_triage_urgency(raw: str) -> Urgency:
     """Parse the tiny triage model's JSON response.
 
     Strips markdown code fences and surrounding prose, extracts the first JSON
@@ -18,6 +26,7 @@ def parse_triage_urgency(raw: str) -> str:
         raise ValueError("No JSON object found in triage output")
     data = json.loads(match.group(0))
     urgency = data.get("urgency")
-    if urgency not in VALID_URGENCIES:
+    try:
+        return Urgency(urgency)
+    except ValueError:
         raise ValueError(f"Invalid urgency value: {urgency!r}")
-    return urgency

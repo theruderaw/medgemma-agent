@@ -12,6 +12,7 @@ class Session:
     messages: list[dict] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     last_activity: float = field(default_factory=time.time)
+    persisted_count: int = 0
 
     def to_dict(self) -> dict:
         return {

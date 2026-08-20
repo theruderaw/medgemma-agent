@@ -2,7 +2,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app.config import settings
+from app.core.config import settings
 from app.llm import ChatResult
 from app.main import app
 from app.safety import RED_FLAG_RULES, detect_emergency
@@ -69,6 +69,37 @@ def test_emergency_short_circuits_without_model_calls(monkeypatch):
     assert "medical emergency" in body["response"]
     assert "chest pain" in body["response"]
     assert body["session_id"]
+    assert body["urgency"] == "emergency"
+
+
+def test_chat_response_exposes_triage_urgency(monkeypatch):
+    async def fake_triage(message, temperature=0.0):
+        return '{"urgency": "general"}'
+
+    async def fake_route(messages, tools, temperature=0.7, model=None):
+        return ChatResult(content="ok", tool_calls=[])
+
+    monkeypatch.setattr("app.services.chat.llm.triage", fake_triage)
+    monkeypatch.setattr("app.services.chat.llm.chat_with_tools", fake_route)
+
+    response = client.post(CHAT_URL, json={"message": "It started after I ran"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["urgency"] == "general"
+
+
+def test_chat_response_urgency_null_when_triage_disabled(monkeypatch):
+    monkeypatch.setattr(settings, "triage_enabled", False)
+
+    async def fake_route(messages, tools, temperature=0.7, model=None):
+        return ChatResult(content="ok", tool_calls=[])
+
+    monkeypatch.setattr("app.services.chat.llm.chat_with_tools", fake_route)
+
+    response = client.post(CHAT_URL, json={"message": "hello"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["urgency"] is None
 
 
 def test_triage_urgency_reaches_routing_context(monkeypatch):

@@ -12,6 +12,7 @@ SESSION_KEY_PREFIX = "medgemma:session:"
 
 class SessionStore(ABC):
     timeout_seconds: float
+    retains_full_history: bool = False
 
     @abstractmethod
     async def get(self, session_id: str) -> Session | None:

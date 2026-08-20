@@ -1,31 +1,14 @@
-import re
-
 import httpx
 from dataclasses import dataclass
 
-from .config import settings
-from .prompts.triage import TRIAGE_FORMAT, TRIAGE_PROMPT
+from ..core.config import settings
+from ..prompts.triage import TRIAGE_FORMAT, TRIAGE_PROMPT
 
 
 @dataclass
 class ChatResult:
     content: str
     tool_calls: list[dict]
-
-
-def extract_answer(content: str) -> str:
-    """Extract the model's actual reply from a Qwen3 response.
-
-    Qwen3 sometimes precedes its real answer with a reasoning preamble and
-    wraps the reply in `<response>...</response>` tags. When the tags are
-    present the inner text is returned; otherwise the content is returned
-    unchanged (trimmed).
-    """
-    text = content.strip()
-    match = re.search(r"<response>(.*?)</response>", text, re.DOTALL)
-    if match:
-        return match.group(1).strip()
-    return text
 
 
 class LLMClient:
@@ -73,7 +56,7 @@ class LLMClient:
             "temperature": temperature,
             "tools": tools,
             "tool_choice": "auto",
-            "enable_thinking": False,
+            # "enable_thinking": False,
         }
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(f"{self.base_url}/v1/chat/completions", json=payload)
