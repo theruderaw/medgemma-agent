@@ -118,7 +118,7 @@ async def test_context_budget_drops_from_front():
 
 def _redis_available() -> bool:
     try:
-        from app.config import settings
+        from app.core.config import settings
 
         import redis.asyncio as aioredis
 
@@ -138,7 +138,7 @@ def _redis_available() -> bool:
 @pytest.mark.asyncio
 async def test_redis_store_roundtrip():
     from app.sessions import RedisSessionStore
-    from app.config import settings
+    from app.core.config import settings
 
     store = RedisSessionStore(settings.redis_url, 60)
     session = Session(session_id="redis-test-session")

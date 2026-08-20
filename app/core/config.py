@@ -9,6 +9,11 @@ class Settings:
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     llm_timeout_seconds: float = float(os.getenv("LLM_TIMEOUT_SECONDS", "120"))
     session_store_type: str = os.getenv("SESSION_STORE", "memory")
+    database_url: str = os.getenv("DATABASE_URL", "postgresql:///medgemma-agent")
+    audit_enabled: bool = os.getenv(
+        "AUDIT_ENABLED",
+        "true" if os.getenv("SESSION_STORE", "memory") == "postgres" else "false",
+    ).lower() in ("1", "true", "yes", "on")
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     session_timeout_seconds: float = float(os.getenv("SESSION_TIMEOUT_SECONDS", "1800"))
     max_history_messages: int = int(os.getenv("MAX_HISTORY_MESSAGES", "40"))

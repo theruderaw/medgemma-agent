@@ -2,7 +2,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app.config import settings
+from app.core.config import settings
 from app.llm import ChatResult, extract_answer
 from app.main import app
 

@@ -2,5 +2,8 @@ fastapi
 uvicorn[standard]
 httpx
 redis
+asyncpg
+sqlmodel
+alembic
 pytest
 pytest-asyncio

@@ -1,3 +1,5 @@
+from ..triage import Urgency
+
 TRIAGE_PROMPT = (
     "Classify the urgency of this health-related message. "
     'Respond with JSON: {{"urgency": "emergency" | "medical" | "general"}}.\n\n'
@@ -9,7 +11,7 @@ TRIAGE_FORMAT = {
     "properties": {
         "urgency": {
             "type": "string",
-            "enum": ["emergency", "medical", "general"],
+            "enum": [u.value for u in Urgency],
         }
     },
     "required": ["urgency"],
