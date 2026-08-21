@@ -12,13 +12,15 @@ export default function MessageList({ messages }: { messages: Message[] }) {
   }, [messages]);
 
   return (
-    <main ref={scrollRef} aria-live="polite" className="flex flex-1 flex-col gap-3 overflow-y-auto p-5">
-      {messages.map((m) => (
-        <Fragment key={m.id}>
-          {m.role === 'assistant' && m.events?.length ? <EventTimeline events={m.events} /> : null}
-          <MessageBubble message={m} />
-        </Fragment>
-      ))}
+    <main ref={scrollRef} aria-live="polite" className="flex flex-1 flex-col overflow-y-auto p-5">
+      <div className="mt-auto flex flex-col gap-3">
+        {messages.map((m) => (
+          <Fragment key={m.id}>
+            {m.role === 'assistant' && m.events?.length ? <EventTimeline events={m.events} /> : null}
+            <MessageBubble message={m} />
+          </Fragment>
+        ))}
+      </div>
     </main>
   );
 }

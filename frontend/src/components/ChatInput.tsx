@@ -65,7 +65,7 @@ export default function ChatInput({ busy, onSend }: Props) {
   return (
     <footer className="flex flex-col gap-2 border-t border-slate-800 bg-slate-900 px-5 py-3">
       {image && (
-        <div className="flex items-center gap-2 self-start rounded-lg border border-slate-700 bg-slate-800 px-2 py-1.5">
+        <div className="flex items-center gap-2 self-start px-2 py-1.5">
           <img src={image.previewUrl} alt="" className="h-10 w-10 rounded object-cover" />
           <span className="max-w-[180px] truncate text-xs text-slate-300">
             {image.mime.replace('image/', '').toUpperCase()} · {(image.b64.length * 0.75 / 1024).toFixed(0)} KB
@@ -75,7 +75,7 @@ export default function ChatInput({ busy, onSend }: Props) {
             onClick={detach}
             disabled={busy}
             aria-label="Remove image"
-            className="cursor-pointer rounded px-1.5 text-slate-400 hover:bg-slate-700 hover:text-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
+            className="cursor-pointer rounded px-1.5 text-slate-400 transition-colors hover:text-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
           >
             ✕
           </button>
@@ -96,7 +96,7 @@ export default function ChatInput({ busy, onSend }: Props) {
           disabled={busy}
           aria-label="Attach image"
           title="Attach an image of a visual symptom (JPEG/PNG/WebP, max 5 MB)"
-          className="cursor-pointer rounded-lg border border-slate-700 px-3 text-slate-300 hover:border-sky-400 hover:text-sky-300 disabled:cursor-not-allowed disabled:opacity-50"
+          className="cursor-pointer px-3 text-slate-300 transition-colors hover:text-sky-300 disabled:cursor-not-allowed disabled:opacity-50"
         >
           📎
         </button>
@@ -117,10 +117,10 @@ export default function ChatInput({ busy, onSend }: Props) {
               submit();
             }
           }}
-          className="max-h-[120px] flex-1 resize-none rounded-lg border border-transparent bg-slate-800 px-2.5 py-2.5 text-inherit placeholder:text-slate-500 focus:border-sky-400 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+          className="max-h-[120px] flex-1 resize-none border-b border-slate-700 bg-transparent px-2.5 py-2.5 text-inherit placeholder:text-slate-500 focus:border-sky-400 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
         />
         <button
-          className="cursor-pointer rounded-lg bg-sky-400 px-5 font-semibold text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
+          className="cursor-pointer px-5 font-semibold text-sky-400 transition-colors hover:text-sky-300 disabled:cursor-not-allowed disabled:opacity-50"
           type="button"
           onClick={submit}
           disabled={busy}

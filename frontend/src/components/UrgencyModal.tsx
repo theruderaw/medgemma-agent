@@ -35,7 +35,7 @@ export default function UrgencyModal({ message, onAcknowledge }: Props) {
       aria-modal="true"
       aria-labelledby="urgent-title"
     >
-      <div className="w-full max-w-lg rounded-xl border-2 border-red-500 bg-slate-900 p-6 shadow-2xl">
+      <div className="w-full max-w-lg p-6">
         <div className="mb-4 flex items-center gap-3">
           <span className="h-3 w-3 rounded-full bg-red-500" />
           <h2 id="urgent-title" className="m-0 text-lg font-bold uppercase tracking-widest text-red-400">
@@ -56,7 +56,7 @@ export default function UrgencyModal({ message, onAcknowledge }: Props) {
           placeholder="acceptedabcd"
           autoComplete="off"
           spellCheck={false}
-          className="w-full rounded-lg border border-red-500/50 bg-slate-800 px-3 py-2 font-mono text-slate-200 placeholder:text-slate-500 focus:border-red-400 focus:outline-none"
+          className="w-full border-b border-red-500/50 bg-transparent px-3 py-2 font-mono text-slate-200 placeholder:text-slate-500 focus:border-red-400 focus:outline-none"
         />
       </div>
     </div>

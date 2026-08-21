@@ -42,7 +42,7 @@ function kv(key: string, value: unknown) {
 
 function EventPayload({ ev }: { ev: AuditEvent }) {
   const p = ev.payload ?? {};
-  const raw = <pre className="mt-1 max-h-[120px] overflow-auto whitespace-pre-wrap break-words rounded-md bg-slate-950 p-1.5 font-mono text-[11px] text-slate-400">{JSON.stringify(p, null, 2)}</pre>;
+  const raw = <pre className="mt-1 max-h-[120px] overflow-auto whitespace-pre-wrap break-words p-1.5 font-mono text-[11px] text-slate-400">{JSON.stringify(p, null, 2)}</pre>;
   switch (ev.event_type) {
     case 'safety_override':
       return kv('category', p.category);
@@ -72,16 +72,9 @@ function EventPayload({ ev }: { ev: AuditEvent }) {
         </div>
       );
     case 'specialist_output':
-      return (
-        <div className="flex flex-col gap-1">
-          {kv('model', p.model)}
-          {p.note != null && (
-            <pre className="mt-1 max-h-[120px] overflow-auto whitespace-pre-wrap break-words rounded-md bg-slate-950 p-1.5 font-mono text-[11px] text-slate-400">
-              {String(p.note)}
-            </pre>
-          )}
-        </div>
-      );
+      return kv('model', p.model);
+    case 'turn_completed':
+      return kv('model', p.model);
     default:
       return raw;
   }
@@ -96,7 +89,7 @@ function EventStep({ ev }: { ev: AuditEvent }) {
         type="button"
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
-        className={`flex cursor-pointer items-center gap-2 self-start rounded-md border-l-2 bg-slate-900 px-3 py-1.5 text-xs font-semibold text-slate-300 transition-colors hover:bg-slate-800 ${accent}`}
+        className={`flex cursor-pointer items-center gap-2 self-start border-l-2 px-3 py-1.5 text-xs font-semibold text-slate-300 transition-colors hover:text-slate-100 ${accent}`}
       >
         <span className="text-[10px] uppercase tracking-wider text-slate-500">{ev.module}</span>
         <span>{stepLabel(ev)}</span>
@@ -112,7 +105,7 @@ function EventStep({ ev }: { ev: AuditEvent }) {
         </svg>
       </button>
       {open && (
-        <div className="mt-1.5 rounded-md border border-slate-800 bg-slate-900 px-3 py-2 text-xs text-slate-300">
+        <div className="mt-1.5 px-3 py-2 text-xs text-slate-300">
           <div className="mb-1 font-mono text-[10px] text-slate-500">{ev.event_type}</div>
           <EventPayload ev={ev} />
         </div>
