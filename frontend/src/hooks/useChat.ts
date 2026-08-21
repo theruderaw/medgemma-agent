@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef } from 'react';
 import { QueuedResponse, resetSession, streamChat, waitForJob } from '../lib/api';
-import type { ChatResponse, Message } from '../types';
+import type { AttachedImage, AuditEvent, ChatResponse, Message } from '../types';
 
 const SESSION_KEY = 'medgemma:session_id';
 
@@ -14,6 +14,8 @@ export interface ChatState {
 export type ChatAction =
   | { type: 'send_start'; user: Message; thinking: Message }
   | { type: 'stream_token'; messageId: number; delta: string }
+  | { type: 'specialist_token'; messageId: number; delta: string }
+  | { type: 'pipeline_event'; messageId: number; event: AuditEvent }
   | { type: 'turn_success'; data: ChatResponse; thinkingId: number }
   | { type: 'turn_error'; message: Message; gone: boolean; thinkingId: number }
   | { type: 'acknowledge' }
@@ -31,11 +33,39 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case 'send_start':
       return { ...state, busy: true, messages: [...state.messages, action.user, action.thinking] };
     case 'stream_token':
+      if (!action.delta) return state;
       return {
         ...state,
         messages: state.messages.map((m) =>
           m.id === action.messageId
-            ? { ...m, thinking: false, streaming: true, text: m.text + action.delta }
+            ? {
+                ...m,
+                thinking: false,
+                streaming: true,
+                text: m.thinking ? action.delta : m.text + action.delta,
+              }
+            : m,
+        ),
+      };
+    case 'specialist_token':
+      return {
+        ...state,
+        messages: state.messages.map((m) =>
+          m.id === action.messageId
+            ? {
+                ...m,
+                specialistNote: (m.specialistNote ?? '') + action.delta,
+                specialistStreaming: true,
+              }
+            : m,
+        ),
+      };
+    case 'pipeline_event':
+      return {
+        ...state,
+        messages: state.messages.map((m) =>
+          m.id === action.messageId
+            ? { ...m, events: [...(m.events ?? []), action.event] }
             : m,
         ),
       };
@@ -53,6 +83,7 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
         text: action.data.response,
         urgency: action.data.urgency,
         events: action.data.events ?? [],
+        specialistStreaming: false,
       };
       return {
         ...state,
@@ -87,11 +118,16 @@ export function useChat() {
   }, [state.sessionId]);
 
   const send = useCallback(
-    async (text: string) => {
+    async (text: string, image?: AttachedImage) => {
       const trimmed = text.trim();
       if (!trimmed || state.busy) return;
 
-      const user: Message = { id: nextId.current++, role: 'user', text: trimmed };
+      const user: Message = {
+        id: nextId.current++,
+        role: 'user',
+        text: trimmed,
+        imagePreview: image?.previewUrl,
+      };
       const thinking: Message = {
         id: nextId.current++,
         role: 'assistant',
@@ -111,11 +147,19 @@ export function useChat() {
       };
 
       try {
-        await streamChat(trimmed, state.sessionId, {
-          onToken: (delta) => dispatch({ type: 'stream_token', messageId: thinking.id, delta }),
-          onDone: (data) => dispatch({ type: 'turn_success', data, thinkingId: thinking.id }),
-          onError: (message, status) => fail(message, status === 410),
-        });
+        await streamChat(
+          trimmed,
+          state.sessionId,
+          {
+            onToken: (delta) => dispatch({ type: 'stream_token', messageId: thinking.id, delta }),
+            onSpecialistToken: (delta) =>
+              dispatch({ type: 'specialist_token', messageId: thinking.id, delta }),
+            onPipeline: (event) => dispatch({ type: 'pipeline_event', messageId: thinking.id, event }),
+            onDone: (data) => dispatch({ type: 'turn_success', data, thinkingId: thinking.id }),
+            onError: (message, status) => fail(message, status === 410),
+          },
+          image,
+        );
       } catch (err) {
         if (err instanceof QueuedResponse) {
           try {

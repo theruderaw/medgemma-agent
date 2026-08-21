@@ -6,6 +6,7 @@ const MODULE_ACCENT: Record<string, string> = {
   triage: 'border-violet-400',
   router: 'border-sky-400',
   specialist: 'border-green-500',
+  image: 'border-amber-400',
   chat: 'border-slate-500',
 };
 
@@ -14,9 +15,12 @@ function stepLabel(ev: AuditEvent): string {
   switch (ev.event_type) {
     case 'safety_override':
       return 'Safety check';
+    case 'image_received':
+      return 'Image received';
     case 'triage_result':
-      return 'Triage';
+      return p.source === 'vision' ? 'Triage (vision)' : 'Triage';
     case 'routing_decision':
+      if (p.image_override) return 'Image → specialist';
       return p.category === 'symptom_related' ? 'Call specialist' : 'Routing';
     case 'specialist_output':
       return 'Specialist note';
@@ -42,13 +46,29 @@ function EventPayload({ ev }: { ev: AuditEvent }) {
   switch (ev.event_type) {
     case 'safety_override':
       return kv('category', p.category);
-    case 'triage_result':
-      return kv('urgency', p.urgency);
+    case 'image_received':
+      return (
+        <div className="flex flex-col gap-1">
+          {kv('mime', p.mime)}
+          {p.size_bytes != null && kv('size', `${p.size_bytes} bytes`)}
+        </div>
+      );
+    case 'triage_result': {
+      const redFlags = Array.isArray(p.red_flags) ? (p.red_flags as unknown[]) : [];
+      return (
+        <div className="flex flex-col gap-1">
+          {kv('urgency', p.urgency)}
+          {redFlags.length > 0 && kv('red_flags', redFlags.join(', '))}
+          {p.source != null && kv('source', p.source)}
+        </div>
+      );
+    }
     case 'routing_decision':
       return (
         <div className="flex flex-col gap-1">
           {kv('category', p.category)}
           {p.reason != null && kv('reason', p.reason)}
+          {p.image_override != null && kv('image_override', p.image_override)}
         </div>
       );
     case 'specialist_output':

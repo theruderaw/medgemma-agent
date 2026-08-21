@@ -1,4 +1,31 @@
-export type Urgency = 'emergency' | 'medical' | 'general' | null;
+export type Urgency = 'emergency' | 'urgent' | 'routine' | 'self_care' | null;
+
+/** An image picked in the UI, ready to ride along with a chat/triage request. */
+export interface AttachedImage {
+  /** Base64 payload (no data: prefix). */
+  b64: string;
+  mime: string;
+  /** data: URL for local preview rendering. */
+  previewUrl: string;
+}
+
+export interface ImageMeta {
+  path: string;
+  sha256: string;
+  mime: string;
+  size_bytes: number;
+}
+
+export interface TriageApiResponse {
+  urgency: Exclude<Urgency, null>;
+  red_flags: string[];
+  text_findings: string[];
+  image_findings: string[];
+  reasoning: string;
+  model: string;
+  source: 'rules' | 'text' | 'vision';
+  image: ImageMeta | null;
+}
 
 export interface AuditEvent {
   module: string;
@@ -41,4 +68,9 @@ export interface Message {
   streaming?: boolean;
   urgency?: Urgency;
   events?: AuditEvent[];
+  /** Client-side preview of an image attached to a user message. */
+  imagePreview?: string;
+  /** MedGemma clinical note, accumulated live from specialist_token events. */
+  specialistNote?: string;
+  specialistStreaming?: boolean;
 }

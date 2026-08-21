@@ -9,13 +9,13 @@ from fastapi.testclient import TestClient
 
 client = TestClient(app)
 
-CHAT_URL = "/chat"
+CHAT_URL = "/v1/chat"
 
 
 @pytest.fixture(autouse=True)
 def mock_triage(monkeypatch):
-    async def fake_triage(message, temperature=0.0):
-        return '{"urgency": "general"}'
+    async def fake_triage(message, temperature=0.0, image_b64=None):
+        return '{"urgency": "self_care"}'
 
     monkeypatch.setattr("app.services.chat.llm.triage", fake_triage)
 
@@ -94,7 +94,7 @@ def test_chat_routes_clinical_message_to_specialist_then_synthesis(monkeypatch):
     roles = [m["role"] for m in synthesis["messages"]]
     assert roles == ["system", "system", "system", "user"]
     triage_msg, specialist_msg = synthesis["messages"][1], synthesis["messages"][2]
-    assert "urgency level: general" in triage_msg["content"]
+    assert "urgency level: self_care" in triage_msg["content"]
     assert "A clinical specialist model produced the following note" in specialist_msg["content"]
     assert "clinical note" in specialist_msg["content"]
 

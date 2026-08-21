@@ -28,9 +28,40 @@ export default function MessageBubble({ message }: { message: Message }) {
       >
         {ROLE_LABEL[message.role]}
       </span>
-      {message.role === 'assistant' && <UrgencyBanner urgency={message.urgency} />}
+      {message.imagePreview && (
+        <img
+          src={message.imagePreview}
+          alt="Attached symptom image"
+          className="mb-2 max-h-48 rounded-xl border border-blue-500/40 object-cover"
+        />
+      )}
+      {message.role === 'assistant' && (
+        <>
+          <UrgencyBanner urgency={message.urgency} />
+          {message.specialistNote != null && (
+            <div className="mb-2 rounded-lg border border-green-500/30 bg-green-500/5 px-2.5 py-2">
+              <div className="mb-1 flex items-center gap-1.5 text-[10px] uppercase tracking-wider text-green-300">
+                Clinical note
+                {message.specialistStreaming && (
+                  <span className="flex gap-0.5" aria-label="MedGemma is writing">
+                    <span className="h-1 w-1 animate-bounce rounded-full bg-green-400 [animation-delay:0ms]" />
+                    <span className="h-1 w-1 animate-bounce rounded-full bg-green-400 [animation-delay:150ms]" />
+                    <span className="h-1 w-1 animate-bounce rounded-full bg-green-400 [animation-delay:300ms]" />
+                  </span>
+                )}
+              </div>
+              <div className="whitespace-pre-wrap text-xs leading-relaxed text-slate-200">
+                {message.specialistNote}
+              </div>
+            </div>
+          )}
+        </>
+      )}
       {message.streaming ? (
-        <span className="whitespace-pre-wrap">{message.text}</span>
+        <span className="whitespace-pre-wrap">
+          {message.text}
+          <span className="ml-0.5 inline-block h-3.5 w-1.5 animate-pulse bg-slate-400 align-text-bottom" />
+        </span>
       ) : (
         <Markdown text={message.text} />
       )}

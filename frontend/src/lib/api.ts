@@ -1,4 +1,12 @@
-import type { ChatResponse, ChatResult, JobResponse, QueuedChatResponse } from '../types';
+import type {
+  AttachedImage,
+  AuditEvent,
+  ChatResponse,
+  ChatResult,
+  JobResponse,
+  QueuedChatResponse,
+  TriageApiResponse,
+} from '../types';
 
 export class ApiError extends Error {
   readonly status: number;
@@ -19,11 +27,19 @@ async function json<T>(res: Response): Promise<T> {
   return data;
 }
 
-export async function sendMessage(message: string, sessionId: string | null): Promise<ChatResult> {
-  const res = await fetch('/chat', {
+function imageFields(image?: AttachedImage) {
+  return image ? { image_b64: image.b64, image_mime: image.mime } : {};
+}
+
+export async function sendMessage(
+  message: string,
+  sessionId: string | null,
+  image?: AttachedImage,
+): Promise<ChatResult> {
+  const res = await fetch('/v1/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, session_id: sessionId }),
+    body: JSON.stringify({ message, session_id: sessionId, ...imageFields(image) }),
   });
   if (res.status === 202) {
     return { kind: 'queued', data: await json<QueuedChatResponse>(res) };
@@ -31,8 +47,22 @@ export async function sendMessage(message: string, sessionId: string | null): Pr
   return { kind: 'sync', data: await json<ChatResponse>(res) };
 }
 
+/**
+ * POST /v1/triage — stateless urgency classification, no session and no
+ * synthesis. Accepts an optional image, which dispatches to the multimodal
+ * vision tier.
+ */
+export async function triageCheck(message: string, image?: AttachedImage): Promise<TriageApiResponse> {
+  const res = await fetch('/v1/triage', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message, ...imageFields(image) }),
+  });
+  return json<TriageApiResponse>(res);
+}
+
 export async function pollJob(jobId: string): Promise<JobResponse> {
-  const res = await fetch(`/jobs/${encodeURIComponent(jobId)}`);
+  const res = await fetch(`/v1/jobs/${encodeURIComponent(jobId)}`);
   if (!res.ok) {
     const data = (await res.json().catch(() => ({}))) as { detail?: string };
     throw new ApiError(res.status, data.detail ?? `Job lookup failed (${res.status})`);
@@ -41,7 +71,7 @@ export async function pollJob(jobId: string): Promise<JobResponse> {
 }
 
 export async function resetSession(sessionId: string): Promise<void> {
-  await fetch(`/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+  await fetch(`/v1/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
 }
 
 export async function health(): Promise<boolean> {
@@ -80,6 +110,12 @@ export interface StreamHandlers {
   onToken: (delta: string) => void;
   onDone: (data: ChatResponse) => void;
   onError: (message: string, status?: number) => void;
+  /** Pipeline audit events (triage, routing, specialist, image) as they land. */
+  onPipeline?: (event: AuditEvent) => void;
+  /** MedGemma specialist note deltas while the note is being written. */
+  onSpecialistToken?: (delta: string) => void;
+  /** Emitted once when the stream opens (before any model work). */
+  onStart?: (sessionId: string | null) => void;
 }
 
 /**
@@ -94,13 +130,14 @@ export async function streamChat(
   message: string,
   sessionId: string | null,
   handlers: StreamHandlers,
+  image?: AttachedImage,
 ): Promise<void> {
   let res: Response;
   try {
-    res = await fetch('/chat/stream', {
+    res = await fetch('/v1/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message, session_id: sessionId }),
+      body: JSON.stringify({ message, session_id: sessionId, ...imageFields(image) }),
     });
   } catch (err) {
     handlers.onError(`Could not reach the server: ${err instanceof Error ? err.message : err}`);
@@ -132,8 +169,17 @@ export async function streamChat(
       return;
     }
     switch (payload.type) {
+      case 'start':
+        handlers.onStart?.(typeof payload.session_id === 'string' ? payload.session_id : null);
+        break;
       case 'token':
         handlers.onToken(String(payload.content ?? ''));
+        break;
+      case 'specialist_token':
+        handlers.onSpecialistToken?.(String(payload.content ?? ''));
+        break;
+      case 'pipeline':
+        handlers.onPipeline?.(payload.event as AuditEvent);
         break;
       case 'done':
         gotDone = true;

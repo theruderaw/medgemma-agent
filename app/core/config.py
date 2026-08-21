@@ -12,7 +12,19 @@ class Settings:
     model_name: str = os.getenv("MODEL_NAME", "qwen3:4b")
     specialist_model_name: str = os.getenv("SPECIALIST_MODEL_NAME", "medgemma1.5:4b")
     triage_model_name: str = os.getenv("TRIAGE_MODEL_NAME", "qwen3:0.6b")
+    vision_triage_model_name: str = os.getenv("VISION_TRIAGE_MODEL_NAME", "medgemma1.5:4b")
     triage_enabled: bool = os.getenv("TRIAGE_ENABLED", "true").lower() in ("1", "true", "yes", "on")
+    image_max_bytes: int = int(os.getenv("IMAGE_MAX_BYTES", str(5 * 1024 * 1024)))
+    image_allowed_mime: tuple[str, ...] = tuple(
+        m.strip()
+        for m in os.getenv("IMAGE_ALLOWED_MIME", "image/jpeg,image/png,image/webp").split(",")
+        if m.strip()
+    )
+    image_upload_dir: str = os.getenv(
+        "IMAGE_UPLOAD_DIR",
+        str(Path(__file__).resolve().parent.parent / "data" / "uploads"),
+    )
+    image_max_dimension_px: int = int(os.getenv("IMAGE_MAX_DIMENSION_PX", "1024"))
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     llm_timeout_seconds: float = float(os.getenv("LLM_TIMEOUT_SECONDS", "120"))
     session_store_type: str = os.getenv("SESSION_STORE", "memory")

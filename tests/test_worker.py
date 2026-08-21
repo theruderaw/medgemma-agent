@@ -17,7 +17,7 @@ from app.worker import (
 
 client = TestClient(app)
 
-CHAT_URL = "/chat"
+CHAT_URL = "/v1/chat"
 
 
 def _redis_available() -> bool:
@@ -98,6 +98,9 @@ def test_queued_chat_returns_202_with_job_id(monkeypatch):
     assert sent["args"] == ["hello"]
     assert sent["kwargs"]["session_id"] == body["session_id"]
     assert sent["kwargs"]["temperature"] == 0.7
+    assert sent["kwargs"]["image_b64"] is None
+    assert sent["kwargs"]["image_sha256"] is None
+    assert sent["kwargs"]["image_size_bytes"] is None
     assert sent["marked"] == "job-123"
 
 
@@ -144,7 +147,7 @@ def test_job_status_unknown_job_returns_404(monkeypatch):
         return False
 
     monkeypatch.setattr("app.main.job_exists", fake_job_exists)
-    assert client.get("/jobs/never-existed").status_code == 404
+    assert client.get("/v1/jobs/never-existed").status_code == 404
 
 
 def test_job_status_pending(monkeypatch):
@@ -152,7 +155,7 @@ def test_job_status_pending(monkeypatch):
         monkeypatch,
         FakeAsyncResult(meta={"status": "PENDING"}, ready=False, successful=False, state="PENDING"),
     )
-    response = client.get("/jobs/j1")
+    response = client.get("/v1/jobs/j1")
     assert response.status_code == 200
     assert response.json()["status"] == "pending"
 
@@ -162,7 +165,7 @@ def test_job_status_processing(monkeypatch):
         monkeypatch,
         FakeAsyncResult(meta={"status": "STARTED"}, ready=False, successful=False, state="STARTED"),
     )
-    response = client.get("/jobs/j1")
+    response = client.get("/v1/jobs/j1")
     assert response.status_code == 200
     assert response.json()["status"] == "processing"
 
@@ -177,18 +180,18 @@ def test_job_status_success(monkeypatch):
             result={
                 "session_id": "s1",
                 "response": "all good",
-                "urgency": "general",
+                "urgency": "routine",
                 "events": [],
             },
         ),
     )
-    response = client.get("/jobs/j1")
+    response = client.get("/v1/jobs/j1")
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "success"
     assert body["result"]["response"] == "all good"
     assert body["result"]["session_id"] == "s1"
-    assert body["result"]["urgency"] == "general"
+    assert body["result"]["urgency"] == "routine"
 
 
 def test_job_status_llm_failure_returns_200(monkeypatch):
@@ -202,7 +205,7 @@ def test_job_status_llm_failure_returns_200(monkeypatch):
             result=JobProcessingError("model-server-http:502"),
         ),
     )
-    response = client.get("/jobs/j1")
+    response = client.get("/v1/jobs/j1")
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "failure"
@@ -220,7 +223,7 @@ def test_job_status_non_llm_failure_returns_500(monkeypatch):
             result=JobProcessingError("SessionExpiredError: session gone"),
         ),
     )
-    response = client.get("/jobs/j1")
+    response = client.get("/v1/jobs/j1")
     assert response.status_code == 500
 
 
@@ -239,7 +242,7 @@ def test_job_events_unknown_job_returns_404(monkeypatch):
         return False
 
     monkeypatch.setattr("app.main.job_exists", fake_job_exists)
-    assert client.get("/jobs/never-existed/events").status_code == 404
+    assert client.get("/v1/jobs/never-existed/events").status_code == 404
 
 
 def test_job_events_streams_pipeline_then_result(monkeypatch):
@@ -253,7 +256,7 @@ def test_job_events_streams_pipeline_then_result(monkeypatch):
             result={
                 "session_id": "s1",
                 "response": "all good",
-                "urgency": "general",
+                "urgency": "routine",
                 "events": [],
             },
         ),
@@ -265,7 +268,7 @@ def test_job_events_streams_pipeline_then_result(monkeypatch):
                 {
                     "module": "triage",
                     "event_type": "triage_result",
-                    "payload": {"urgency": "general"},
+                    "payload": {"urgency": "routine"},
                     "turn_id": "t1",
                 }
             )
@@ -273,7 +276,7 @@ def test_job_events_streams_pipeline_then_result(monkeypatch):
 
     monkeypatch.setattr("app.main.read_events", fake_read_events)
 
-    response = client.get("/jobs/j1/events")
+    response = client.get("/v1/jobs/j1/events")
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
     text = response.text
@@ -300,7 +303,7 @@ def test_job_events_emits_error_on_failure(monkeypatch):
 
     monkeypatch.setattr("app.main.read_events", fake_read_events)
 
-    response = client.get("/jobs/j1/events")
+    response = client.get("/v1/jobs/j1/events")
     assert response.status_code == 200
     assert "event: error" in response.text
     assert "model-server-http:502" in response.text
@@ -329,7 +332,7 @@ def _http_status(status: int) -> httpx.HTTPStatusError:
 def test_task_calls_run_chat_turn_with_same_args(monkeypatch):
     captured = {}
 
-    async def fake_run(message, *, session_id=None, temperature=0.7, on_event=None):
+    async def fake_run(message, *, session_id=None, temperature=0.7, image=None, on_event=None):
         captured["message"] = message
         captured["session_id"] = session_id
         captured["temperature"] = temperature
@@ -339,7 +342,7 @@ def test_task_calls_run_chat_turn_with_same_args(monkeypatch):
         return TurnResult(
             session_id=session_id or "s",
             response="ok",
-            urgency="general",
+            urgency="routine",
             events=[{"module": "chat", "event_type": "turn_completed", "payload": {}}],
         )
 
@@ -353,13 +356,13 @@ def test_task_calls_run_chat_turn_with_same_args(monkeypatch):
     assert result == {
         "session_id": "s",
         "response": "ok",
-        "urgency": "general",
+        "urgency": "routine",
         "events": [{"module": "chat", "event_type": "turn_completed", "payload": {}}],
     }
 
 
 def test_task_maps_502_to_transient_error(monkeypatch):
-    async def fail(message, *, session_id=None, temperature=0.7, on_event=None):
+    async def fail(message, *, session_id=None, temperature=0.7, image=None, on_event=None):
         raise _http_status(502)
 
     monkeypatch.setattr("app.services.chat.run_chat_turn", fail)
@@ -368,7 +371,7 @@ def test_task_maps_502_to_transient_error(monkeypatch):
 
 
 def test_task_maps_503_to_transient_error(monkeypatch):
-    async def fail(message, *, session_id=None, temperature=0.7, on_event=None):
+    async def fail(message, *, session_id=None, temperature=0.7, image=None, on_event=None):
         raise _http_status(503)
 
     monkeypatch.setattr("app.services.chat.run_chat_turn", fail)
@@ -377,7 +380,7 @@ def test_task_maps_503_to_transient_error(monkeypatch):
 
 
 def test_task_maps_connect_error_to_transient_error(monkeypatch):
-    async def fail(message, *, session_id=None, temperature=0.7, on_event=None):
+    async def fail(message, *, session_id=None, temperature=0.7, image=None, on_event=None):
         raise httpx.ConnectError("connection refused")
 
     monkeypatch.setattr("app.services.chat.run_chat_turn", fail)
@@ -386,7 +389,7 @@ def test_task_maps_connect_error_to_transient_error(monkeypatch):
 
 
 def test_task_maps_timeout_to_transient_error(monkeypatch):
-    async def fail(message, *, session_id=None, temperature=0.7, on_event=None):
+    async def fail(message, *, session_id=None, temperature=0.7, image=None, on_event=None):
         raise httpx.ReadTimeout("timed out")
 
     monkeypatch.setattr("app.services.chat.run_chat_turn", fail)
@@ -395,7 +398,7 @@ def test_task_maps_timeout_to_transient_error(monkeypatch):
 
 
 def test_task_passes_non_retriable_http_status(monkeypatch):
-    async def fail(message, *, session_id=None, temperature=0.7, on_event=None):
+    async def fail(message, *, session_id=None, temperature=0.7, image=None, on_event=None):
         raise _http_status(400)
 
     monkeypatch.setattr("app.services.chat.run_chat_turn", fail)
@@ -405,7 +408,7 @@ def test_task_passes_non_retriable_http_status(monkeypatch):
 
 
 def test_task_wraps_non_llm_error(monkeypatch):
-    async def fail(message, *, session_id=None, temperature=0.7, on_event=None):
+    async def fail(message, *, session_id=None, temperature=0.7, image=None, on_event=None):
         raise ValueError("boom")
 
     monkeypatch.setattr("app.services.chat.run_chat_turn", fail)
@@ -433,8 +436,8 @@ def test_run_chat_turn_invokes_on_event_per_recorded_event(monkeypatch):
     monkeypatch.setattr("app.services.chat.sessions", _memory_manager())
     monkeypatch.setattr("app.services.chat.audit", NullAuditLogger())
 
-    async def fake_triage(message, temperature=0.0):
-        return '{"urgency": "medical"}'
+    async def fake_triage(message, temperature=0.0, image_b64=None):
+        return '{"urgency": "urgent"}'
 
     async def fake_route(messages, tools, temperature=0.7, model=None):
         return ChatResult(content="direct reply", tool_calls=[])
@@ -468,12 +471,12 @@ def test_task_publishes_events_to_buffer(monkeypatch):
     monkeypatch.setattr("app.worker.append_event", fake_append)
     monkeypatch.setattr("app.worker.clear_events", fake_clear)
 
-    async def fake_run(message, *, session_id=None, temperature=0.7, on_event=None):
+    async def fake_run(message, *, session_id=None, temperature=0.7, image=None, on_event=None):
         await on_event(
             {
                 "module": "triage",
                 "event_type": "triage_result",
-                "payload": {"urgency": "general"},
+                "payload": {"urgency": "routine"},
                 "turn_id": "t1",
             }
         )
@@ -505,8 +508,8 @@ def test_queued_job_lifecycle_against_redis(monkeypatch):
     monkeypatch.setattr("app.services.chat.sessions", _memory_manager())
     monkeypatch.setattr("app.services.chat.audit", NullAuditLogger())
 
-    async def fake_triage(message, temperature=0.0):
-        return '{"urgency": "general"}'
+    async def fake_triage(message, temperature=0.0, image_b64=None):
+        return '{"urgency": "self_care"}'
 
     async def fake_route(messages, tools, temperature=0.7, model=None):
         return ChatResult(content="hello from worker", tool_calls=[])
@@ -521,13 +524,13 @@ def test_queued_job_lifecycle_against_redis(monkeypatch):
         process_turn.backend.mark_as_done(job_id, eager.result)
         asyncio.run(mark_enqueued(job_id))
 
-        response = client.get(f"/jobs/{job_id}")
+        response = client.get(f"/v1/jobs/{job_id}")
         assert response.status_code == 200
         body = response.json()
         assert body["status"] == "success"
         assert body["result"]["response"] == "hello from worker"
         assert body["result"]["session_id"]
-        assert body["result"]["urgency"] == "general"
+        assert body["result"]["urgency"] == "self_care"
     finally:
         process_turn.backend.delete(job_id)
         import redis
@@ -546,7 +549,7 @@ def test_queued_job_llm_failure_against_redis(monkeypatch):
     monkeypatch.setattr("app.services.chat.sessions", _memory_manager())
     monkeypatch.setattr("app.services.chat.audit", NullAuditLogger())
 
-    async def fail(message, *, session_id=None, temperature=0.7, on_event=None):
+    async def fail(message, *, session_id=None, temperature=0.7, image=None, on_event=None):
         raise _http_status(502)
 
     monkeypatch.setattr("app.services.chat.run_chat_turn", fail)
@@ -559,7 +562,7 @@ def test_queued_job_llm_failure_against_redis(monkeypatch):
         process_turn.backend.mark_as_failure(job_id, eager.result)
         asyncio.run(mark_enqueued(job_id))
 
-        response = client.get(f"/jobs/{job_id}")
+        response = client.get(f"/v1/jobs/{job_id}")
         assert response.status_code == 200
         body = response.json()
         assert body["status"] == "failure"

@@ -20,8 +20,8 @@ client = TestClient(app)
 
 @pytest.fixture(autouse=True)
 def mock_llm(monkeypatch):
-    async def fake_triage(message, temperature=0.0):
-        return '{"urgency": "general"}'
+    async def fake_triage(message, temperature=0.0, image_b64=None):
+        return '{"urgency": "self_care"}'
 
     async def fake_route(messages, tools, temperature=0.7, model=None):
         return ChatResult(content="hello back", tool_calls=[])
@@ -42,7 +42,7 @@ def _jsonl_lines(path) -> list[dict]:
 @pytest.mark.asyncio
 async def test_json_file_audit_appends_one_line_per_event(tmp_path):
     logger = JsonFileAuditLogger(tmp_path / "audit.jsonl")
-    await logger.append(module="triage", event_type="triage_result", payload={"urgency": "general"}, session_id="s1", turn_id="t1")
+    await logger.append(module="triage", event_type="triage_result", payload={"urgency": "routine"}, session_id="s1", turn_id="t1")
     await logger.append(module="chat", event_type="turn_completed", payload={"response": "ok"}, session_id="s1", turn_id="t1")
 
     records = _jsonl_lines(tmp_path / "audit.jsonl")
@@ -50,7 +50,7 @@ async def test_json_file_audit_appends_one_line_per_event(tmp_path):
     first, second = records
     assert first["module"] == "triage"
     assert first["event_type"] == "triage_result"
-    assert first["payload"] == {"urgency": "general"}
+    assert first["payload"] == {"urgency": "routine"}
     assert first["session_id"] == "s1"
     assert first["turn_id"] == "t1"
     assert isinstance(first["timestamp"], float)
@@ -144,7 +144,7 @@ def audit_file(monkeypatch, tmp_path):
 
 
 def test_chat_turn_writes_audit_jsonl(audit_file):
-    response = client.post("/chat", json={"message": "hello"})
+    response = client.post("/v1/chat", json={"message": "hello"})
     assert response.status_code == 200
 
     event_types = [r["event_type"] for r in _jsonl_lines(audit_file)]
@@ -154,7 +154,7 @@ def test_chat_turn_writes_audit_jsonl(audit_file):
 
 
 def test_emergency_turn_writes_safety_override_audit(audit_file):
-    response = client.post("/chat", json={"message": "I have chest pain"})
+    response = client.post("/v1/chat", json={"message": "I have chest pain"})
     assert response.status_code == 200
     assert response.json()["urgency"] == "emergency"
 
@@ -163,10 +163,10 @@ def test_emergency_turn_writes_safety_override_audit(audit_file):
 
 
 def test_session_reset_writes_audit_jsonl(audit_file):
-    created = client.post("/chat", json={"message": "hi"})
+    created = client.post("/v1/chat", json={"message": "hi"})
     session_id = created.json()["session_id"]
 
-    reset = client.delete(f"/sessions/{session_id}")
+    reset = client.delete(f"/v1/sessions/{session_id}")
     assert reset.status_code == 204
 
     event_types = [r["event_type"] for r in _jsonl_lines(audit_file)]
@@ -185,7 +185,7 @@ def test_queued_chat_enqueue_writes_job_audit(monkeypatch, audit_file):
     monkeypatch.setattr("app.main.process_turn.apply_async", fake_apply_async)
     monkeypatch.setattr("app.main.mark_enqueued", fake_mark)
 
-    response = client.post("/chat", json={"message": "hello"})
+    response = client.post("/v1/chat", json={"message": "hello"})
     assert response.status_code == 202
 
     event_types = [r["event_type"] for r in _jsonl_lines(audit_file)]

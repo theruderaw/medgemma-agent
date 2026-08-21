@@ -55,20 +55,40 @@ celery.conf.update(
     retry_jitter=True,
     max_retries=settings.job_max_retries,
 )
-def process_turn(self, message: str, session_id: str | None = None, temperature: float = 0.7):
+def process_turn(
+    self,
+    message: str,
+    session_id: str | None = None,
+    temperature: float = 0.7,
+    image_b64: str | None = None,
+    image_sha256: str | None = None,
+    image_size_bytes: int | None = None,
+):
     """Run one full chat turn off the HTTP request path.
 
     Calls the same turn-processing path as sync mode so safety, triage,
-    routing, and audit behavior are identical. Retries only transient
+    routing, and audit behavior are identical. ``image_b64`` arrives already
+    sanitized by the API layer (validated, EXIF-stripped, downscaled); only
+    the hash/size metadata rides alongside it. Retries only transient
     model-server failures (unreachable, timeout, 502/503); all other errors
     propagate as a permanent task failure.
     """
+    from .core.images import ProcessedImage
     from .services.chat import run_chat_turn
 
     job_id = self.request.id
 
+    image = None
+    if image_b64 is not None:
+        image = ProcessedImage(
+            b64=image_b64,
+            mime="image/jpeg",
+            size_bytes=image_size_bytes or 0,
+            sha256=image_sha256 or "",
+        )
+
     structlog.contextvars.bind_contextvars(job_id=job_id, session_id=session_id)
-    logger.info("job.started", job_id=job_id, session_id=session_id)
+    logger.info("job.started", job_id=job_id, session_id=session_id, has_image=image is not None)
     asyncio.run(
         audit.append(
             module="job",
@@ -95,6 +115,7 @@ def process_turn(self, message: str, session_id: str | None = None, temperature:
                 message,
                 session_id=session_id,
                 temperature=temperature,
+                image=image,
                 on_event=on_event,
             )
         )

@@ -1,9 +1,10 @@
 import type { Urgency } from '../types';
 
 const URGENCY_BANNER: Record<Exclude<Urgency, null>, { value: string; classes: string }> = {
-  emergency: { value: 'URGENT', classes: 'border-red-500 bg-red-500/10 text-red-300' },
-  medical: { value: 'MEDICAL', classes: 'border-amber-500 bg-amber-500/10 text-amber-300' },
-  general: { value: 'GENERAL', classes: 'border-green-500 bg-green-500/10 text-green-300' },
+  emergency: { value: 'EMERGENCY', classes: 'border-red-500 bg-red-500/10 text-red-300' },
+  urgent: { value: 'URGENT', classes: 'border-amber-500 bg-amber-500/10 text-amber-300' },
+  routine: { value: 'ROUTINE', classes: 'border-sky-500 bg-sky-500/10 text-sky-300' },
+  self_care: { value: 'SELF CARE', classes: 'border-green-500 bg-green-500/10 text-green-300' },
 };
 
 export default function UrgencyBanner({ urgency }: { urgency: Urgency | undefined }) {

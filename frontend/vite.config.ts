@@ -9,10 +9,8 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/chat': backend,
+      '/v1': backend,
       '/health': backend,
-      '/jobs': backend,
-      '/sessions': backend,
     },
   },
 });

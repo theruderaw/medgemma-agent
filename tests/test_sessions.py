@@ -163,5 +163,5 @@ async def test_chat_expired_session_returns_410(monkeypatch):
 
     monkeypatch.setattr("app.services.chat.sessions", manager)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as ac:
-        response = await ac.post("/chat", json={"message": "hi", "session_id": session_id})
+        response = await ac.post("/v1/chat", json={"message": "hi", "session_id": session_id})
     assert response.status_code == 410

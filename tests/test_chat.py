@@ -8,13 +8,13 @@ from app.main import app
 
 client = TestClient(app)
 
-CHAT_URL = "/chat"
+CHAT_URL = "/v1/chat"
 
 
 @pytest.fixture(autouse=True)
 def mock_triage(monkeypatch):
-    async def fake_triage(message, temperature=0.0):
-        return '{"urgency": "general"}'
+    async def fake_triage(message, temperature=0.0, image_b64=None):
+        return '{"urgency": "self_care"}'
 
     monkeypatch.setattr("app.services.chat.llm.triage", fake_triage)
 
@@ -119,7 +119,7 @@ def test_session_reset(monkeypatch):
     created = client.post(CHAT_URL, json={"message": "hi"})
     session_id = created.json()["session_id"]
 
-    reset = client.delete(f"/sessions/{session_id}")
+    reset = client.delete(f"/v1/sessions/{session_id}")
     assert reset.status_code == 204
 
     reused = client.post(CHAT_URL, json={"message": "hi", "session_id": session_id})
@@ -127,7 +127,7 @@ def test_session_reset(monkeypatch):
 
 
 def test_reset_unknown_session_returns_404():
-    response = client.delete("/sessions/nonexistent-session")
+    response = client.delete("/v1/sessions/nonexistent-session")
     assert response.status_code == 404
 
 

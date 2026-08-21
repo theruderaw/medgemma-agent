@@ -1,3 +1,3 @@
-from .parsing import VALID_URGENCIES, Urgency, parse_triage_urgency
+from .parsing import VALID_URGENCIES, TriageResult, Urgency, parse_triage_result
 
-__all__ = ["VALID_URGENCIES", "Urgency", "parse_triage_urgency"]
+__all__ = ["VALID_URGENCIES", "TriageResult", "Urgency", "parse_triage_result"]
