@@ -9,19 +9,17 @@ from ..audit import audit, trim_llm_payload
 from ..core.config import settings
 from ..core.images import ProcessedImage, persist_image
 from ..core.logging import get_logger
+from ..features import registry as feature_registry
 from ..llm import StreamExtractor, extract_answer, llm
 from ..prompts import (
     ROUTING_SYSTEM_PROMPT,
-    SPECIALIST_SYSTEM_PROMPT,
-    SPECIALIST_TOOL,
     SYSTEM_PROMPT,
-    specialist_context_for,
     triage_context_for,
 )
 from ..routes import RouteCategory, RouteDecision, parse_tool_calls
 from ..safety import EMERGENCY_RESPONSE, detect_emergency, enforce_safety_invariants, run_output_guard
 from ..sessions import sessions
-from ..specialist import SpecialistResult, parse_specialist_result
+from ..specialist import SpecialistResult
 from ..triage import Urgency
 from .triage import run_triage
 
@@ -241,7 +239,7 @@ async def run_chat_turn(
         started = time.monotonic()
         routing = await llm.chat_with_tools(
             routing_messages,
-            tools=[SPECIALIST_TOOL],
+            tools=feature_registry.tool_schemas(),
             temperature=temperature,
             model=settings.model_name,
         )
@@ -268,9 +266,12 @@ async def run_chat_turn(
 
         specialist: SpecialistResult | None = None
         if decision.category is RouteCategory.SYMPTOM_RELATED:
+            feature = feature_registry.get(decision.feature_name)
+            if feature is None:
+                raise ValueError(f"unknown feature '{decision.feature_name}'")
             reason = decision.reason or message
             specialist_messages = [
-                {"role": "system", "content": SPECIALIST_SYSTEM_PROMPT},
+                {"role": "system", "content": feature.system_prompt},
                 {"role": "user", "content": reason},
             ]
             # The specialist always returns a complete structured result
@@ -288,7 +289,7 @@ async def run_chat_turn(
                 if on_specialist_token is not None:
                     await on_specialist_token(delta)
             raw_specialist = "".join(specialist_parts)
-            specialist = parse_specialist_result(raw_specialist)
+            specialist = feature.parse(raw_specialist)
             specialist_ms = int((time.monotonic() - started) * 1000)
             await record(
                 "specialist",
@@ -301,7 +302,7 @@ async def run_chat_turn(
                     "duration_ms": specialist_ms,
                 },
             )
-            specialist_context = specialist_context_for(specialist, image_analyzed=image is not None)
+            specialist_context = feature.context_for(specialist, image_analyzed=image is not None)
 
             messages = [{"role": "system", "content": SYSTEM_PROMPT}]
             if triage_context:

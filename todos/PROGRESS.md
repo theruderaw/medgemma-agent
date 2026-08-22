@@ -18,9 +18,10 @@
 
 ## Current status
 
-- **Active step:** Step 1 complete — next is Step 2 (`03-step2-migrate-specialist.md`, task 2.1)
+- **Active step:** Step 2 complete — next is Step 3 (`04-step3-new-addons.md`, task 3.1)
 - **Last updated by:** ox-alpha session, 2026-08-22
-- **Blockers / open questions:** none. See `CLEANUP_NOTES.md` (delete after Step 2 absorbs it).
+- **Blockers / open questions:** none. `CLEANUP_NOTES.md` deleted; its still-relevant
+  content (config-naming convention for Step 5) is preserved in the Step 5 section below.
 
 ---
 
@@ -60,16 +61,30 @@ dispatch.
 ---
 
 ## Step 2 — Migrate Existing Specialist (`03-step2-migrate-specialist.md`)
-- [ ] 2.1 `app/features/clinical_assessment.py` created, registered
-- [ ] 2.2 `SPECIALIST_TOOL` removed from `app/prompts/routing.py` (re-export checked via grep)
-- [ ] 2.3 `run_chat_turn` dispatches via `feature_registry.tool_schemas()`
-- [ ] 2.3a `RouteDecision.feature_name` added, `parse_tool_calls` generalized
-- [ ] 2.3b specialist call site uses `feature.system_prompt` / `feature.parse()` / `feature.context_for()`
-- [ ] 2.4 Regression check: response/audit JSON shape identical before/after
-- [ ] Any missing test coverage found in Step 0 §0.5 added before refactor
-- [ ] `pytest` green
+- [x] 2.1 `app/features/clinical_assessment.py` created, registered
+- [x] 2.2 `SPECIALIST_TOOL` removed from `app/prompts/routing.py` (re-export checked via grep)
+- [x] 2.3 `run_chat_turn` dispatches via `feature_registry.tool_schemas()`
+- [x] 2.3a `RouteDecision.feature_name` added, `parse_tool_calls` generalized
+- [x] 2.3b specialist call site uses `feature.system_prompt` / `feature.parse()` / `feature.context_for()`
+- [x] 2.4 Regression check: response/audit JSON shape identical before/after
+- [x] Any missing test coverage found in Step 0 §0.5 added before refactor
+- [x] `pytest` green
 
-**Notes:**
+**Notes:** The Step 0 §0.5 gap was closed FIRST (`test_safety.py::
+TestSafetyInvariants::test_emergency_triage_cannot_be_downgraded`, triage
+EMERGENCY + non-template draft → `safety_invariant` / `emergency_bypass`
+event), then the dispatch refactor. Tool schema sent to the router verified
+byte-identical to the old `SPECIALIST_TOOL`. Deviations from the doc:
+(1) `SPECIALIST_FORMAT` stayed in `app/prompts/specialist.py` — it is the
+LLM transport contract consumed by `llm/client.py::specialist_stream` and
+`tests/integration/fake_ollama.py`; moving it would have created an
+`llm → features` upward dependency. It moves when `specialist_stream`
+becomes feature-parameterized (Step 3+). (2) `RouteDecision.feature_name`
+defaults to `"call_medical_specialist"` so the image-override construction
+site needed no change; `parse_tool_calls` fills the matched registered name.
+(3) Added a fail-fast `ValueError` at dispatch if `registry.get()` returns
+None (unreachable today, prevents silent AttributeError in future steps).
+Suite now 36 passed (35 baseline + 1 new).
 
 ---
 
@@ -111,7 +126,15 @@ dispatch.
 - [ ] 5.6 Tests: toggle affects router tool list; emergency floor unaffected by any toggle state
 - [ ] `pytest` green
 
-**Notes:**
+**Notes:** Config-naming convention (absorbed from Step 0's
+`CLEANUP_NOTES.md` §0.6): `app/core/config.py` = plain class of class-level
+attributes, `os.getenv` with defaults; env vars `SCREAMING_SNAKE_CASE`
+mirror attribute `snake_case` exactly (`MODEL_NAME` → `model_name`);
+domain prefixes group related knobs (`image_*`, `audit_*`, `job_*`, model
+roles as `*_model_name`). Step 5 should add e.g. `FEATURE_SETTINGS_*` /
+`feature_*` following the same pattern. No pydantic-settings — keep it that
+way unless a step says otherwise. (README drift, still unfixed: README's
+config table omits `MAX_HISTORY_MESSAGES`, default 40.)
 
 ---
 

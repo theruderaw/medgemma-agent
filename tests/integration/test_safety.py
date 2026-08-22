@@ -63,6 +63,28 @@ class TestEmergencyFloor:
         assert fake_ollama.calls("specialist") == []
 
 
+class TestSafetyInvariants:
+    async def test_emergency_triage_cannot_be_downgraded(self, client, fake_ollama):
+        """Structured triage says EMERGENCY but the drafted reply is not the
+        hardcoded emergency template → the deterministic invariant replaces
+        it and records a safety_invariant event."""
+        fake_ollama.configure(triage_json=json.dumps({"urgency": "emergency"}))
+
+        response = await client.post(
+            "/v1/chat", params={"triage": "true"}, json={"message": "my elbow hurts"}
+        )
+        assert response.status_code == 202
+        result = (await wait_for_job(client, response.json()["job_id"]))["result"]
+
+        invariant_events = [
+            e for e in result["events"] if e["event_type"] == "safety_invariant"
+        ]
+        assert invariant_events, "emergency downgrade must be flagged"
+        assert "emergency_bypass" in invariant_events[0]["payload"]["violations"]
+        assert "replace_emergency_response" in invariant_events[0]["payload"]["actions"]
+        assert "local emergency number" in result["response"]
+
+
 class TestOutputGuardrails:
     async def _completed_result(self, client, job_id) -> dict:
         return (await wait_for_job(client, job_id))["result"]
