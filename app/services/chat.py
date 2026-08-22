@@ -1,4 +1,4 @@
-import asyncio
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from uuid import uuid4
@@ -12,19 +12,25 @@ from ..core.logging import get_logger
 from ..llm import StreamExtractor, extract_answer, llm
 from ..prompts import (
     ROUTING_SYSTEM_PROMPT,
-    SPECIALIST_CONTEXT,
     SPECIALIST_SYSTEM_PROMPT,
     SPECIALIST_TOOL,
     SYSTEM_PROMPT,
+    specialist_context_for,
     triage_context_for,
 )
 from ..routes import RouteCategory, RouteDecision, parse_tool_calls
-from ..safety import EMERGENCY_RESPONSE, detect_emergency
+from ..safety import EMERGENCY_RESPONSE, detect_emergency, enforce_safety_invariants, run_output_guard
 from ..sessions import sessions
+from ..specialist import SpecialistResult, parse_specialist_result
 from ..triage import Urgency
-from .triage import run_triage, triage_model_for
+from .triage import run_triage
 
 logger = get_logger("app.services.chat")
+
+# Pipeline path identifiers: every turn is traceable to exactly one.
+PATH_EMERGENCY_OVERRIDE = "emergency_override"
+PATH_MEDICAL_SPECIALIST = "medical_specialist"
+PATH_QWEN_DIRECT = "qwen_direct"
 
 
 @dataclass
@@ -33,6 +39,7 @@ class TurnResult:
     response: str
     urgency: Urgency | None = None
     events: list[dict] | None = None
+    path: str | None = None
 
 
 async def run_emergency_turn(
@@ -93,6 +100,7 @@ async def run_emergency_turn(
         response=response_text,
         urgency=Urgency.EMERGENCY,
         events=events,
+        path=PATH_EMERGENCY_OVERRIDE,
     )
 
 
@@ -102,6 +110,7 @@ async def run_chat_turn(
     session_id: str | None = None,
     temperature: float = 0.7,
     image: ProcessedImage | None = None,
+    triage: bool = False,
     on_event: Callable[[dict], Awaitable[None]] | None = None,
     on_token: Callable[[str], Awaitable[None]] | None = None,
     on_specialist_token: Callable[[str], Awaitable[None]] | None = None,
@@ -109,10 +118,11 @@ async def run_chat_turn(
     """Execute one full chat turn.
 
     Lock the session, append the user message, run the deterministic safety
-    floor (independent — always first), then the extended triage signal, then
-    let Qwen route contextually via function calling: it either requests the
+    floor (independent — always first, never skipped), then — only when
+    ``triage`` is requested for this turn — the MedGemma text-triage signal.
+    Qwen then routes contextually via function calling: it either requests the
     clinical specialist or answers directly. Symptom-related turns get a
-    MedGemma note injected before the final Qwen synthesis.
+    MedGemma structured assessment injected before the final Qwen synthesis.
 
     When ``image`` is supplied (a sanitized upload), it is persisted and
     audited, triage dispatches to the multimodal vision tier, and an attached
@@ -131,6 +141,7 @@ async def run_chat_turn(
     turn_id = uuid4().hex
     events: list[dict] = []
     turn_urgency: Urgency | None = None
+    turn_path: str | None = None
 
     structlog.contextvars.bind_contextvars(session_id=resolved_id, turn_id=turn_id)
     logger.info("turn.started", mode="chat", has_image=image is not None)
@@ -170,31 +181,46 @@ async def run_chat_turn(
                 },
             )
 
-        if settings.triage_enabled:
-            emergency = detect_emergency(message)
-            if emergency is not None:
-                response_text = EMERGENCY_RESPONSE.format(category=emergency)
-                await sessions.append(session, "assistant", response_text)
-                await sessions.save(session)
-                await record(
-                    "safety",
-                    "safety_override",
-                    {"category": emergency, "message": message},
-                )
-                logger.info("turn.completed", mode="chat", result="emergency", events=len(events))
-                structlog.contextvars.unbind_contextvars("session_id", "turn_id")
-                return TurnResult(
-                    session_id=session.session_id,
-                    response=response_text,
-                    urgency=Urgency.EMERGENCY,
-                    events=events,
-                )
+        # Deterministic red-flag floor: application code, no model call, runs
+        # on every turn regardless of the triage opt-in.
+        emergency = detect_emergency(message)
+        if emergency is not None:
+            response_text = EMERGENCY_RESPONSE.format(category=emergency)
+            await sessions.append(session, "assistant", response_text)
+            await sessions.save(session)
+            await record(
+                "safety",
+                "safety_override",
+                {
+                    "category": emergency,
+                    "message": message,
+                    "path": PATH_EMERGENCY_OVERRIDE,
+                },
+            )
+            logger.info(
+                "turn.completed",
+                mode="chat",
+                result="emergency",
+                path=PATH_EMERGENCY_OVERRIDE,
+                events=len(events),
+            )
+            structlog.contextvars.unbind_contextvars("session_id", "turn_id")
+            return TurnResult(
+                session_id=session.session_id,
+                response=response_text,
+                urgency=Urgency.EMERGENCY,
+                events=events,
+                path=PATH_EMERGENCY_OVERRIDE,
+            )
 
         history = sessions.build_messages(session)
 
+        triage_result = None
         triage_context = None
-        if settings.triage_enabled:
-            triage_result = await run_triage(message, image_b64=image.b64 if image else None)
+        if triage:
+            started = time.monotonic()
+            triage_result = await run_triage(message)
+            triage_ms = int((time.monotonic() - started) * 1000)
             turn_urgency = triage_result.urgency
             triage_context = triage_context_for(triage_result)
             await record(
@@ -202,7 +228,8 @@ async def run_chat_turn(
                 "triage_result",
                 {
                     **triage_result.to_dict(),
-                    "model": triage_model_for(image is not None),
+                    "model": settings.triage_model_name,
+                    "duration_ms": triage_ms,
                 },
             )
 
@@ -211,12 +238,14 @@ async def run_chat_turn(
             routing_messages.append({"role": "system", "content": triage_context})
         routing_messages += history
 
+        started = time.monotonic()
         routing = await llm.chat_with_tools(
             routing_messages,
             tools=[SPECIALIST_TOOL],
             temperature=temperature,
             model=settings.model_name,
         )
+        routing_ms = int((time.monotonic() - started) * 1000)
         decision = parse_tool_calls(routing.tool_calls)
         image_override = False
         if image is not None and decision.category is not RouteCategory.SYMPTOM_RELATED:
@@ -233,60 +262,46 @@ async def run_chat_turn(
                 "raw_content": routing.content,
                 "tool_calls": routing.tool_calls,
                 "image_override": image_override,
+                "duration_ms": routing_ms,
             },
         )
 
+        specialist: SpecialistResult | None = None
         if decision.category is RouteCategory.SYMPTOM_RELATED:
             reason = decision.reason or message
             specialist_messages = [
                 {"role": "system", "content": SPECIALIST_SYSTEM_PROMPT},
                 {"role": "user", "content": reason},
             ]
-            if on_specialist_token is not None:
-                cleaner = StreamExtractor()
-                if image is not None:
-                    deltas = llm.chat_with_images_stream(
-                        specialist_messages,
-                        images=[image.b64],
-                        model=settings.specialist_model_name,
-                        temperature=temperature,
-                    )
-                else:
-                    deltas = llm.chat_stream(
-                        specialist_messages,
-                        model=settings.specialist_model_name,
-                        temperature=temperature,
-                    )
-                async for delta in deltas:
-                    chunk = cleaner.feed(delta)
-                    if chunk:
-                        await on_specialist_token(chunk)
-                specialist_note = cleaner.finish()
-                if specialist_note:
-                    await on_specialist_token(specialist_note)
-            elif image is not None:
-                specialist_note = await llm.chat_with_images(
-                    specialist_messages,
-                    images=[image.b64],
-                    model=settings.specialist_model_name,
-                    temperature=temperature,
-                )
-            else:
-                specialist_note = await llm.chat(
-                    specialist_messages,
-                    model=settings.specialist_model_name,
-                )
+            # The specialist always returns a complete structured result
+            # (format-constrained JSON) — uncertainty survives as data, not
+            # prose that a downstream model may reinterpret. The JSON streams
+            # in live: each delta is forwarded as it is generated.
+            started = time.monotonic()
+            specialist_parts: list[str] = []
+            async for delta in llm.specialist_stream(
+                specialist_messages,
+                images=[image.b64] if image is not None else None,
+                model=settings.specialist_model_name,
+            ):
+                specialist_parts.append(delta)
+                if on_specialist_token is not None:
+                    await on_specialist_token(delta)
+            raw_specialist = "".join(specialist_parts)
+            specialist = parse_specialist_result(raw_specialist)
+            specialist_ms = int((time.monotonic() - started) * 1000)
             await record(
                 "specialist",
                 "specialist_output",
                 {
                     "reason": reason,
-                    "note": specialist_note,
+                    "result": specialist.to_dict(),
                     "model": settings.specialist_model_name,
                     "with_image": image is not None,
+                    "duration_ms": specialist_ms,
                 },
             )
-            specialist_context = SPECIALIST_CONTEXT.format(note=specialist_note)
+            specialist_context = specialist_context_for(specialist, image_analyzed=image is not None)
 
             messages = [{"role": "system", "content": SYSTEM_PROMPT}]
             if triage_context:
@@ -294,6 +309,7 @@ async def run_chat_turn(
             if specialist_context:
                 messages.append({"role": "system", "content": specialist_context})
             messages += history
+            started = time.monotonic()
             if on_token is not None:
                 cleaner = StreamExtractor()
                 parts: list[str] = []
@@ -307,25 +323,100 @@ async def run_chat_turn(
                 tail = cleaner.finish()
                 if tail:
                     parts.append(tail)
+                    await on_token(tail)
                 text = "".join(parts)
             else:
                 text = await llm.chat(messages, temperature=temperature, model=settings.model_name)
+            synthesis_ms = int((time.monotonic() - started) * 1000)
+            turn_path = PATH_MEDICAL_SPECIALIST
         else:
             text = extract_answer(routing.content)
+            synthesis_ms = 0
+            turn_path = PATH_QWEN_DIRECT
             if on_token is not None:
                 for i in range(0, len(text), 3):
                     await on_token(text[i : i + 3])
 
         text = extract_answer(text)
+
+        # Deterministic safety invariants — application code, never an LLM,
+        # always on regardless of OUTPUT_GUARDRAILS. The emergency floor here
+        # makes an emergency triage impossible to downgrade.
+        limitations = list(triage_result.limitations) if triage_result else []
+        specialist_uncertain = specialist.uncertain if specialist else False
+        if specialist:
+            limitations += [item for item in specialist.limitations if item not in limitations]
+        body_part_unknown = (
+            image is not None and specialist is not None and specialist.body_part_unknown
+        )
+        enforced = enforce_safety_invariants(
+            text,
+            urgency=turn_urgency,
+            message=message,
+            specialist_uncertain=specialist_uncertain,
+            limitations=limitations,
+            body_part_unknown=body_part_unknown,
+            image_analyzed=image is not None,
+        )
+        safety_blocked = bool(enforced.violations)
+        if safety_blocked:
+            await record(
+                "safety",
+                "safety_invariant",
+                {
+                    "violations": enforced.violations,
+                    "actions": enforced.actions,
+                    "original": text,
+                    "final": enforced.text,
+                },
+            )
+            text = enforced.text
+
+        # Output guardrails are always on: every reply is judged before it is
+        # stored or returned.
+        guarded = await run_output_guard(text, urgency=turn_urgency, message=message)
+        if guarded.violations:
+            safety_blocked = True
+            await record(
+                "safety",
+                "output_guardrail",
+                {
+                    "violations": guarded.violations,
+                    "actions": guarded.actions,
+                    "original": text,
+                    "final": guarded.text,
+                },
+            )
+            if on_token is not None and guarded.text != text:
+                if guarded.text.startswith(text):
+                    await on_token(guarded.text[len(text) :])
+                else:
+                    await on_token(f"\n\n{guarded.text}")
+            text = guarded.text
         await sessions.append(session, "assistant", text)
         await sessions.save(session)
         await record(
             "chat",
             "turn_completed",
-            {"response": text, "temperature": temperature, "model": settings.model_name},
+            {
+                "response": text,
+                "temperature": temperature,
+                "model": settings.model_name,
+                "path": turn_path,
+                "duration_ms": synthesis_ms,
+                "specialist_uncertain": specialist_uncertain,
+                "image_uncertain": body_part_unknown,
+                "safety_blocked": safety_blocked,
+            },
         )
 
-    logger.info("turn.completed", mode="chat", result="ok", events=len(events))
+    logger.info(
+        "turn.completed",
+        mode="chat",
+        result="ok",
+        path=turn_path,
+        events=len(events),
+    )
     structlog.contextvars.unbind_contextvars("session_id", "turn_id")
 
     return TurnResult(
@@ -333,94 +424,6 @@ async def run_chat_turn(
         response=text,
         urgency=turn_urgency,
         events=events,
+        path=turn_path,
     )
 
-
-_STREAM_HEARTBEAT_SECONDS = 2.0
-
-
-async def run_chat_turn_stream(
-    message: str,
-    *,
-    session_id: str | None = None,
-    temperature: float = 0.7,
-    image: ProcessedImage | None = None,
-):
-    """Stream one chat turn to an SSE client — never silent.
-
-    Runs the same pipeline as :func:`run_chat_turn` on a background task and
-    yields event dicts continuously:
-
-    - ``{"type": "start", "session_id": ...}`` immediately on connect
-    - ``{"type": "pipeline", "event": <audit event>}`` as each pipeline stage
-      completes (image_received, triage_result, routing_decision,
-      specialist_output, safety_override)
-    - ``{"type": "specialist_token", "content": ...}`` while MedGemma writes
-      its note (the longest stage)
-    - ``{"type": "token", "content": ...}`` for the final reply — empty-string
-      heartbeats are emitted whenever nothing else is ready, so the token
-      channel flows 100% of the time
-    - ``{"type": "done", "session_id", "response", "urgency", "events"}`` once
-      the turn completes
-
-    Errors from the pipeline are re-raised for the transport layer to map.
-    """
-    queue: asyncio.Queue[tuple[str, object]] = asyncio.Queue()
-
-    async def on_token(chunk: str) -> None:
-        await queue.put(("token", chunk))
-
-    async def on_specialist_token(chunk: str) -> None:
-        await queue.put(("specialist_token", chunk))
-
-    async def on_event(event: dict) -> None:
-        await queue.put(("pipeline", event))
-
-    async def runner() -> None:
-        try:
-            result = await run_chat_turn(
-                message,
-                session_id=session_id,
-                temperature=temperature,
-                image=image,
-                on_event=on_event,
-                on_token=on_token,
-                on_specialist_token=on_specialist_token,
-            )
-            queue.put_nowait(("result", result))
-        except BaseException as exc:  # noqa: BLE001 - forwarded to the caller
-            queue.put_nowait(("error", exc))
-
-    task = asyncio.create_task(runner())
-    try:
-        yield {"type": "start", "session_id": session_id}
-        while True:
-            try:
-                kind, payload = await asyncio.wait_for(
-                    queue.get(), timeout=_STREAM_HEARTBEAT_SECONDS
-                )
-            except asyncio.TimeoutError:
-                yield {"type": "token", "content": ""}
-                continue
-            if kind == "token":
-                yield {"type": "token", "content": payload}
-            elif kind == "specialist_token":
-                yield {"type": "specialist_token", "content": payload}
-            elif kind == "pipeline":
-                yield {"type": "pipeline", "event": payload}
-            elif kind == "error":
-                raise payload
-            else:
-                result = payload
-                break
-    finally:
-        if not task.done():
-            task.cancel()
-
-    yield {
-        "type": "done",
-        "session_id": result.session_id,
-        "response": result.response,
-        "urgency": result.urgency.value if result.urgency is not None else None,
-        "events": result.events or [],
-    }

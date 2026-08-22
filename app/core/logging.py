@@ -73,8 +73,18 @@ def _file_handler() -> logging.handlers.RotatingFileHandler:
 
 
 def _console_handler() -> logging.StreamHandler:
+    """Human-readable console output.
+
+    Colors only when stdout is a real TTY — detached runs (make api/worker)
+    redirect stdout into ``app/logs/*.log``, and ANSI escapes make those files
+    unreadable with ordinary tools.
+    """
+    import sys
+
     handler = logging.StreamHandler()
-    handler.setFormatter(_formatter(structlog.dev.ConsoleRenderer()))
+    handler.setFormatter(
+        _formatter(structlog.dev.ConsoleRenderer(colors=sys.stdout.isatty()))
+    )
     return handler
 
 

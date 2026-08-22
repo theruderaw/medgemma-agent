@@ -1,8 +1,12 @@
 import type { Online } from '../hooks/useHealth';
 
+export type View = 'chat' | 'logs';
+
 interface Props {
   sessionId: string | null;
   online: Online;
+  view: View;
+  onView: (view: View) => void;
   onNewChat: () => void;
 }
 
@@ -10,14 +14,34 @@ function statusLabel(online: Online): string {
   return online === null ? 'checking…' : online ? 'online' : 'offline';
 }
 
-export default function Header({ sessionId, online, onNewChat }: Props) {
+const TABS: { id: View; label: string }[] = [
+  { id: 'chat', label: 'Chat' },
+  { id: 'logs', label: 'Logs' },
+];
+
+export default function Header({ sessionId, online, view, onView, onNewChat }: Props) {
   return (
     <header className="flex items-center justify-between gap-3 px-5 py-3">
       <div>
         <h1 className="m-0 text-base">MedGemma Agent</h1>
-        <div className="text-xs text-slate-400">Qwen3 router &middot; MedGemma specialist &middot; triage classifier</div>
+        <div className="text-xs text-slate-400">Qwen3 router &middot; MedGemma specialist &middot; opt-in triage</div>
       </div>
       <div className="flex items-center gap-3">
+        <nav className="flex rounded-full border border-slate-800 p-0.5" aria-label="Views">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => onView(t.id)}
+              aria-current={view === t.id ? 'page' : undefined}
+              className={`cursor-pointer rounded-full px-3 py-1 text-xs transition-colors ${
+                view === t.id ? 'bg-sky-950 text-sky-300' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </nav>
         {sessionId && <span className="font-mono text-xs text-slate-400">session {sessionId.slice(0, 8)}</span>}
         {sessionId && (
           <button

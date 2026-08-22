@@ -63,15 +63,17 @@ def process_turn(
     image_b64: str | None = None,
     image_sha256: str | None = None,
     image_size_bytes: int | None = None,
+    triage: bool = False,
 ):
     """Run one full chat turn off the HTTP request path.
 
-    Calls the same turn-processing path as sync mode so safety, triage,
+    Calls the same turn-processing path as the API so safety, triage,
     routing, and audit behavior are identical. ``image_b64`` arrives already
     sanitized by the API layer (validated, EXIF-stripped, downscaled); only
-    the hash/size metadata rides alongside it. Retries only transient
-    model-server failures (unreachable, timeout, 502/503); all other errors
-    propagate as a permanent task failure.
+    the hash/size metadata rides alongside it. ``triage`` is the per-turn
+    opt-in from the ``?triage=true`` query param (off by default). Retries
+    only transient model-server failures (unreachable, timeout, 502/503);
+    all other errors propagate as a permanent task failure.
     """
     from .core.images import ProcessedImage
     from .services.chat import run_chat_turn
@@ -88,7 +90,13 @@ def process_turn(
         )
 
     structlog.contextvars.bind_contextvars(job_id=job_id, session_id=session_id)
-    logger.info("job.started", job_id=job_id, session_id=session_id, has_image=image is not None)
+    logger.info(
+        "job.started",
+        job_id=job_id,
+        session_id=session_id,
+        has_image=image is not None,
+        triage=triage,
+    )
     asyncio.run(
         audit.append(
             module="job",
@@ -109,6 +117,18 @@ def process_turn(
         except Exception:
             pass
 
+    async def on_token(content: str) -> None:
+        try:
+            await append_event(job_id, {"type": "token", "content": content})
+        except Exception:
+            pass
+
+    async def on_specialist_token(content: str) -> None:
+        try:
+            await append_event(job_id, {"type": "specialist_token", "content": content})
+        except Exception:
+            pass
+
     try:
         result = asyncio.run(
             run_chat_turn(
@@ -116,7 +136,10 @@ def process_turn(
                 session_id=session_id,
                 temperature=temperature,
                 image=image,
+                triage=triage,
                 on_event=on_event,
+                on_token=on_token,
+                on_specialist_token=on_specialist_token,
             )
         )
     except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as exc:

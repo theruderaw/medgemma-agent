@@ -1,5 +1,7 @@
 from .schemas import (
     AuditEvent,
+    AuditListResponse,
+    AuditRecord,
     ChatRequest,
     ChatResponse,
     ImageMeta,
@@ -11,6 +13,8 @@ from .schemas import (
 
 __all__ = [
     "AuditEvent",
+    "AuditListResponse",
+    "AuditRecord",
     "ChatRequest",
     "ChatResponse",
     "ImageMeta",

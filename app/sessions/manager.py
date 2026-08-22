@@ -3,17 +3,9 @@ import uuid
 
 from ..core.config import settings
 from ..core.context import trim_context
+from .base import SessionStore
 from .models import Session, SessionExpiredError
 from .postgres import PostgresSessionStore
-from .stores import InMemorySessionStore, RedisSessionStore, SessionStore
-
-
-def build_store() -> SessionStore:
-    if settings.session_store_type == "redis":
-        return RedisSessionStore(settings.redis_url, settings.session_timeout_seconds)
-    if settings.session_store_type == "postgres":
-        return PostgresSessionStore(settings.database_url, settings.session_timeout_seconds)
-    return InMemorySessionStore(settings.session_timeout_seconds)
 
 
 class SessionManager:
@@ -78,7 +70,7 @@ class SessionManager:
 
 
 sessions = SessionManager(
-    build_store(),
+    PostgresSessionStore(settings.database_url, settings.session_timeout_seconds),
     max_history_messages=settings.max_history_messages,
     max_context_messages=settings.max_context_messages,
     max_context_chars=settings.max_context_chars,

@@ -57,11 +57,6 @@ class AuditLogger(ABC):
         """Record one immutable audit event."""
 
 
-class NullAuditLogger(AuditLogger):
-    async def append(self, **kwargs: Any) -> None:
-        return None
-
-
 class JsonFileAuditLogger(AuditLogger):
     """Append-only JSONL audit trail.
 
@@ -170,19 +165,17 @@ class CompositeAuditLogger(AuditLogger):
 
 
 def build_audit_logger() -> AuditLogger:
-    """The audit trail always lands in a JSONL file; Postgres joins when enabled.
+    """Every event lands in the JSONL file and is mirrored to Postgres.
 
-    A JSONL file sink is always present so no transaction can silently run
-    without an explicit audit record, regardless of ``AUDIT_ENABLED``.
+    Both sinks are unconditional: no transaction can run without a durable,
+    queryable audit record.
     """
-    sinks: list[AuditLogger] = [
-        JsonFileAuditLogger(settings.audit_file, trim_llm_chars=settings.audit_llm_cap_chars)
-    ]
-    if settings.audit_enabled:
-        sinks.append(PostgresAuditLogger(settings.database_url))
-    if not sinks:
-        return NullAuditLogger()
-    return CompositeAuditLogger(sinks)
+    return CompositeAuditLogger(
+        [
+            JsonFileAuditLogger(settings.audit_file, trim_llm_chars=settings.audit_llm_cap_chars),
+            PostgresAuditLogger(settings.database_url),
+        ]
+    )
 
 
 audit = build_audit_logger()

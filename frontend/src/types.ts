@@ -1,6 +1,6 @@
 export type Urgency = 'emergency' | 'urgent' | 'routine' | 'self_care' | null;
 
-/** An image picked in the UI, ready to ride along with a chat/triage request. */
+/** An image picked in the UI, ready to ride along with a chat request. */
 export interface AttachedImage {
   /** Base64 payload (no data: prefix). */
   b64: string;
@@ -16,17 +16,22 @@ export interface ImageMeta {
   size_bytes: number;
 }
 
+/** POST /v1/triage — the model only emits urgency; other fields are structural. */
 export interface TriageApiResponse {
   urgency: Exclude<Urgency, null>;
   red_flags: string[];
   text_findings: string[];
   image_findings: string[];
   reasoning: string;
+  body_part: string | null;
+  body_part_confidence: number | null;
+  limitations: string[];
   model: string;
-  source: 'rules' | 'text' | 'vision';
+  source: 'rules' | 'text';
   image: ImageMeta | null;
 }
 
+/** Audit-shaped pipeline event (live via SSE, or inside a completed response). */
 export interface AuditEvent {
   module: string;
   event_type: string;
@@ -39,6 +44,8 @@ export interface ChatResponse {
   response: string;
   urgency: Urgency;
   events: AuditEvent[];
+  /** Pipeline path taken this turn (e.g. medical_specialist, emergency_override). */
+  path?: string | null;
 }
 
 export interface QueuedChatResponse {
@@ -54,9 +61,16 @@ export interface JobResponse {
   error?: string | null;
 }
 
-export type ChatResult =
-  | { kind: 'sync'; data: ChatResponse }
-  | { kind: 'queued'; data: QueuedChatResponse };
+/** GET /v1/audit row — the durable Postgres audit trail. */
+export interface AuditRecord {
+  id: number;
+  session_id: string | null;
+  turn_id: string | null;
+  module: string;
+  event_type: string;
+  payload: Record<string, unknown>;
+  created_at: number;
+}
 
 export type MessageRole = 'user' | 'assistant' | 'error';
 

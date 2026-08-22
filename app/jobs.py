@@ -45,6 +45,17 @@ async def exists(job_id: str) -> bool:
         await client.aclose()
 
 
+async def broker_ping() -> bool:
+    """True when the Redis broker answers PING (used by GET /health)."""
+    client = _client()
+    try:
+        return bool(await client.ping())
+    except Exception:
+        return False
+    finally:
+        await client.aclose()
+
+
 async def append_event(job_id: str, event: dict) -> None:
     client = _client()
     try:

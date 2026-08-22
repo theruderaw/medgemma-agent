@@ -25,12 +25,29 @@ class ChatResponse(BaseModel):
     response: str
     urgency: Urgency | None = None
     events: list[AuditEvent] = Field(default_factory=list)
+    path: str | None = None
 
 
 class QueuedChatResponse(BaseModel):
     job_id: str
     session_id: str
     status: str
+
+
+class AuditRecord(BaseModel):
+    """One audit-trail row as served by GET /v1/audit."""
+
+    id: int
+    session_id: str | None = None
+    turn_id: str | None = None
+    module: str
+    event_type: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: float
+
+
+class AuditListResponse(BaseModel):
+    events: list[AuditRecord]
 
 
 class JobResponse(BaseModel):
@@ -59,6 +76,9 @@ class TriageResponse(BaseModel):
     text_findings: list[str] = Field(default_factory=list)
     image_findings: list[str] = Field(default_factory=list)
     reasoning: str = ""
+    body_part: str | None = None
+    body_part_confidence: float | None = None
+    limitations: list[str] = Field(default_factory=list)
     model: str
     source: str  # "rules" | "text" | "vision"
     image: ImageMeta | None = None

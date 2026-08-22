@@ -6,12 +6,13 @@ const MIME_OK = ['image/jpeg', 'image/png', 'image/webp'];
 
 interface Props {
   busy: boolean;
-  onSend: (text: string, image?: AttachedImage) => void;
+  onSend: (text: string, image?: AttachedImage, triage?: boolean) => void;
 }
 
 export default function ChatInput({ busy, onSend }: Props) {
   const [value, setValue] = useState('');
   const [image, setImage] = useState<AttachedImage | null>(null);
+  const [triage, setTriage] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const ref = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -55,8 +56,9 @@ export default function ChatInput({ busy, onSend }: Props) {
   const submit = () => {
     const text = value.trim();
     if (!text || busy) return;
-    onSend(text, image ?? undefined);
+    onSend(text, image ?? undefined, triage);
     setValue('');
+    setTriage(false);
     detach();
     resize();
     ref.current?.focus();
@@ -99,6 +101,20 @@ export default function ChatInput({ busy, onSend }: Props) {
           className="cursor-pointer px-3 text-slate-300 transition-colors hover:text-sky-300 disabled:cursor-not-allowed disabled:opacity-50"
         >
           📎
+        </button>
+        <button
+          type="button"
+          onClick={() => setTriage((t) => !t)}
+          disabled={busy}
+          aria-pressed={triage}
+          title="Classify this message's urgency before the specialist sees it (?triage=true)"
+          className={`cursor-pointer rounded-full border px-2.5 py-0.5 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+            triage
+              ? 'border-sky-400 bg-sky-950 text-sky-300'
+              : 'border-slate-700 text-slate-400 hover:text-slate-200'
+          }`}
+        >
+          Triage
         </button>
         <textarea
           ref={ref}

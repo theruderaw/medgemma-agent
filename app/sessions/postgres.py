@@ -5,8 +5,8 @@ from sqlalchemy.dialects.postgresql import insert
 
 from ..core.db import SessionLocal
 from ..core.models import MessageRow, SessionRow
+from .base import SessionStore
 from .models import Session
-from .stores import SessionStore
 
 
 class PostgresSessionStore(SessionStore):

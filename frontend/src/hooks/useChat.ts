@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useReducer, useRef } from 'react';
-import { QueuedResponse, resetSession, streamChat, waitForJob } from '../lib/api';
+import { ApiError, enqueueTurn, pollUntilDone, resetSession, watchJob } from '../lib/api';
 import type { AttachedImage, AuditEvent, ChatResponse, Message } from '../types';
 
 const SESSION_KEY = 'medgemma:session_id';
@@ -16,6 +16,7 @@ export type ChatAction =
   | { type: 'stream_token'; messageId: number; delta: string }
   | { type: 'specialist_token'; messageId: number; delta: string }
   | { type: 'pipeline_event'; messageId: number; event: AuditEvent }
+  | { type: 'session_known'; sessionId: string }
   | { type: 'turn_success'; data: ChatResponse; thinkingId: number }
   | { type: 'turn_error'; message: Message; gone: boolean; thinkingId: number }
   | { type: 'acknowledge' }
@@ -69,6 +70,8 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
             : m,
         ),
       };
+    case 'session_known':
+      return state.sessionId ? state : { ...state, sessionId: action.sessionId };
     case 'turn_success': {
       const base =
         state.messages.find((m) => m.id === action.thinkingId) ?? {
@@ -110,15 +113,18 @@ function chatReducer(state: ChatState, action: ChatAction): ChatState {
 export function useChat() {
   const [state, dispatch] = useReducer(chatReducer, undefined, initChatState);
   const nextId = useRef(0);
-  const thinkingId = useRef<number | null>(null);
+  const closeWatcher = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     if (state.sessionId) localStorage.setItem(SESSION_KEY, state.sessionId);
     else localStorage.removeItem(SESSION_KEY);
   }, [state.sessionId]);
 
+  // Stop the SSE watcher when the component unmounts.
+  useEffect(() => () => closeWatcher.current?.(), []);
+
   const send = useCallback(
-    async (text: string, image?: AttachedImage) => {
+    async (text: string, image?: AttachedImage, triage = false) => {
       const trimmed = text.trim();
       if (!trimmed || state.busy) return;
 
@@ -134,7 +140,6 @@ export function useChat() {
         text: 'Assistant is thinking…',
         thinking: true,
       };
-      thinkingId.current = thinking.id;
       dispatch({ type: 'send_start', user, thinking });
 
       const fail = (message: string, gone = false) => {
@@ -147,36 +152,64 @@ export function useChat() {
       };
 
       try {
-        await streamChat(
-          trimmed,
-          state.sessionId,
-          {
-            onToken: (delta) => dispatch({ type: 'stream_token', messageId: thinking.id, delta }),
-            onSpecialistToken: (delta) =>
-              dispatch({ type: 'specialist_token', messageId: thinking.id, delta }),
-            onPipeline: (event) => dispatch({ type: 'pipeline_event', messageId: thinking.id, event }),
-            onDone: (data) => dispatch({ type: 'turn_success', data, thinkingId: thinking.id }),
-            onError: (message, status) => fail(message, status === 410),
-          },
-          image,
-        );
-      } catch (err) {
-        if (err instanceof QueuedResponse) {
-          try {
-            const data = await waitForJob(err.data.job_id);
-            dispatch({ type: 'turn_success', data, thinkingId: thinking.id });
-          } catch (jobErr) {
-            fail(jobErr instanceof Error ? jobErr.message : 'Turn failed');
-          }
-        } else {
-          fail(err instanceof Error ? err.message : 'Request failed');
+        const outcome = await enqueueTurn(trimmed, state.sessionId, image, triage);
+
+        // Emergency floor matched: the full response arrived synchronously.
+        if (outcome.kind === 'sync') {
+          dispatch({ type: 'turn_success', data: outcome.data, thinkingId: thinking.id });
+          return;
         }
+
+        // Queued: capture the session id immediately so a refresh keeps it,
+        // then watch the job's event stream live.
+        dispatch({ type: 'session_known', sessionId: outcome.data.session_id });
+
+        let polling = false;
+        const startPollingFallback = () => {
+          if (polling) return;
+          polling = true;
+          pollUntilDone(outcome.data.job_id)
+            .then((data) => dispatch({ type: 'turn_success', data, thinkingId: thinking.id }))
+            .catch((err) =>
+              fail(err instanceof Error ? err.message : 'Turn failed'),
+            );
+        };
+
+        const close = watchJob(outcome.data.job_id, {
+          onToken: (delta) => dispatch({ type: 'stream_token', messageId: thinking.id, delta }),
+          onSpecialistToken: (delta) =>
+            dispatch({ type: 'specialist_token', messageId: thinking.id, delta }),
+          onPipeline: (event) =>
+            dispatch({ type: 'pipeline_event', messageId: thinking.id, event }),
+          onResult: (data) => {
+            close();
+            dispatch({ type: 'turn_success', data, thinkingId: thinking.id });
+          },
+          onError: (message) => {
+            close();
+            fail(message);
+          },
+          onConnectionLost: () => {
+            close();
+            startPollingFallback();
+          },
+        });
+        closeWatcher.current?.();
+        closeWatcher.current = close;
+      } catch (err) {
+        const gone = err instanceof ApiError && err.gone;
+        fail(
+          err instanceof Error ? err.message : 'Request failed',
+          gone,
+        );
       }
     },
     [state.busy, state.sessionId],
   );
 
   const newChat = useCallback(async () => {
+    closeWatcher.current?.();
+    closeWatcher.current = null;
     if (state.sessionId) {
       try {
         await resetSession(state.sessionId);

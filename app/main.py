@@ -13,6 +13,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api import (
+    AuditListResponse,
+    AuditRecord,
     ChatRequest,
     ChatResponse,
     ImageMeta,
@@ -25,12 +27,13 @@ from .audit import audit, trim_llm_payload
 from .core.config import settings
 from .core.images import ImageValidationError, ProcessedImage, decode_and_sanitize, persist_image
 from .core.logging import get_logger, setup_logging
+from .jobs import broker_ping
 from .jobs import exists as job_exists
 from .jobs import mark_enqueued
 from .jobs import read_events
 from .safety import detect_emergency
-from .services.chat import run_chat_turn, run_chat_turn_stream, run_emergency_turn
-from .services.triage import run_triage, triage_model_for
+from .services.chat import run_emergency_turn
+from .services.triage import run_triage
 from .sessions import SessionExpiredError, sessions
 from .triage import TriageResult, Urgency
 from .worker import process_turn
@@ -48,10 +51,7 @@ def _run_migrations() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
-    if settings.processing_mode == "queued" and settings.session_store_type != "redis":
-        raise RuntimeError("PROCESSING_MODE=queued requires SESSION_STORE=redis")
-    if settings.session_store_type == "postgres" or settings.audit_enabled:
-        await asyncio.to_thread(_run_migrations)
+    await asyncio.to_thread(_run_migrations)
     yield
     await sessions.close()
 
@@ -68,7 +68,12 @@ async def index() -> FileResponse:
 
 @app.get("/health")
 async def health() -> dict:
-    return {"status": "ok"}
+    """Component health: the API (up if this responds) and the Redis broker.
+
+    Chat turns only progress when the Celery worker consumes the broker, so
+    ``redis: false`` means every job stays pending.
+    """
+    return {"api": True, "redis": await broker_ping()}
 
 
 def _prepare_image(image_b64: str | None, image_mime: str | None) -> ProcessedImage | None:
@@ -103,13 +108,10 @@ async def triage(request: TriageRequest) -> TriageResponse:
     """Stateless structured triage over text plus an optional image.
 
     Runs the deterministic red-flag floor first (a match short-circuits to a
-    structured emergency result with no model calls), then dispatches to the
-    tiny triage model for text-only turns or the multimodal MedGemma tier when
-    an image is attached. Never mutates session state.
+    structured emergency result with no model calls), then classifies the
+    message text with the text-only MedGemma triage model. Images are stored
+    and audited but never influence urgency. Never mutates session state.
     """
-    if not settings.triage_enabled:
-        raise HTTPException(status_code=503, detail="Triage is disabled (TRIAGE_ENABLED=false)")
-
     turn_id = uuid4().hex
     image = _prepare_image(request.image_b64, request.image_mime)
     image_meta = None
@@ -145,14 +147,14 @@ async def triage(request: TriageRequest) -> TriageResponse:
         return TriageResponse.from_result(result, model="hardcoded_rules", source="rules", image=image_meta)
 
     try:
-        result = await run_triage(request.message, image_b64=image.b64 if image else None)
+        result = await run_triage(request.message)
     except httpx.HTTPStatusError as exc:
         raise HTTPException(status_code=502, detail=f"Model server error: {exc.response.status_code}")
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=503, detail=f"Model server unreachable: {exc}")
 
-    model = triage_model_for(image is not None)
-    source = "vision" if image is not None else "text"
+    model = settings.triage_model_name
+    source = "text"
     await audit.append(
         module="triage",
         event_type="triage_result",
@@ -167,102 +169,30 @@ async def triage(request: TriageRequest) -> TriageResponse:
 
 
 @app.post("/v1/chat")
-async def chat(request: ChatRequest, response: Response):
-    if settings.processing_mode == "queued":
-        result = await queued_chat(request)
-        if isinstance(result, QueuedChatResponse):
-            response.status_code = 202
-        return result
-    return await sync_chat(request)
+async def chat(request: ChatRequest, response: Response, triage: bool = False):
+    """Enqueue one chat turn — always processed by the Celery worker.
 
-
-@app.post("/v1/chat/stream")
-async def chat_stream(request: ChatRequest, response: Response):
-    """Server-Sent Events variant of `/v1/chat` (sync mode).
-
-    Streams the final reply token-by-token as ``event`/data` SSE messages:
-    ``token`` events carry content deltas, a ``done`` event carries the full
-    ChatResponse (session, urgency, events), and ``error`` events carry
-    pipeline/model failures. In queued mode this falls back to `/v1/chat`'s
-    202 + job_id flow.
+    Returns ``202 {job_id, session_id}``; stream pipeline events and reply
+    tokens via ``GET /v1/jobs/{job_id}/events``. Pass ``?triage=true`` to add
+    the model-triage stage for this turn (off by default). An emergency
+    red-flag match never enqueues: it short-circuits synchronously with a
+    full response.
     """
-    if settings.processing_mode == "queued":
-        result = await queued_chat(request)
-        if isinstance(result, QueuedChatResponse):
-            response.status_code = 202
-        return result
-    # Validate the upload before the stream opens so a 422 is a clean JSON
-    # error rather than a mid-stream failure.
-    image = _prepare_image(request.image_b64, request.image_mime)
-    return StreamingResponse(
-        _stream_chat_turn(request, image),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-    )
+    result = await queued_chat(request, triage)
+    if isinstance(result, QueuedChatResponse):
+        response.status_code = 202
+    return result
 
 
-async def _stream_chat_turn(request: ChatRequest, image: ProcessedImage | None):
-    try:
-        async for event in run_chat_turn_stream(
-            request.message,
-            session_id=request.session_id,
-            temperature=request.temperature,
-            image=image,
-        ):
-            name = event.get("type", "message")
-            yield f"event: {name}\ndata: {json.dumps(event)}\n\n"
-    except SessionExpiredError:
-        yield _sse_error(410, "Session expired or not found. Start a new session.")
-    except httpx.HTTPStatusError as exc:
-        yield _sse_error(502, f"Model server error: {exc.response.status_code}")
-    except httpx.HTTPError as exc:
-        yield _sse_error(503, f"Model server unreachable: {exc}")
-    except asyncio.CancelledError:
-        logger.info("chat.stream.closed")
-        raise
-
-
-def _sse_error(status: int, message: str) -> str:
-    return (
-        f"event: error\ndata: {json.dumps({'type': 'error', 'status': status, 'message': message})}\n\n"
-    )
-
-
-async def sync_chat(request: ChatRequest) -> ChatResponse:
-    try:
-        image = _prepare_image(request.image_b64, request.image_mime)
-        result = await run_chat_turn(
-            request.message,
-            session_id=request.session_id,
-            temperature=request.temperature,
-            image=image,
-        )
-    except SessionExpiredError:
-        raise HTTPException(
-            status_code=410,
-            detail="Session expired or not found. Start a new session.",
-        )
-    except httpx.HTTPStatusError as exc:
-        raise HTTPException(status_code=502, detail=f"Model server error: {exc.response.status_code}")
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=503, detail=f"Model server unreachable: {exc}")
-    return ChatResponse(
-        session_id=result.session_id,
-        response=result.response,
-        urgency=result.urgency,
-        events=result.events or [],
-    )
-
-
-async def queued_chat(request: ChatRequest) -> QueuedChatResponse | ChatResponse:
-    """Queued-mode `/v1/chat`.
+async def queued_chat(request: ChatRequest, triage: bool = False) -> QueuedChatResponse | ChatResponse:
+    """Enqueue a chat turn onto the Celery queue.
 
     The deterministic safety floor runs synchronously first; an emergency match
     short-circuits with a full synchronous response and is never enqueued.
     Otherwise the turn is enqueued and a `202` with the Celery task id is
     returned; poll `GET /v1/jobs/{job_id}` for the result.
     """
-    if settings.triage_enabled and detect_emergency(request.message) is not None:
+    if detect_emergency(request.message) is not None:
         result = await run_emergency_turn(request.message, session_id=request.session_id)
         return ChatResponse(
             session_id=result.session_id,
@@ -295,6 +225,7 @@ async def queued_chat(request: ChatRequest) -> QueuedChatResponse | ChatResponse
                 "image_b64": image.b64 if image else None,
                 "image_sha256": image.sha256 if image else None,
                 "image_size_bytes": image.size_bytes if image else None,
+                "triage": triage,
             },
         )
         await mark_enqueued(task.id)
@@ -307,29 +238,49 @@ async def queued_chat(request: ChatRequest) -> QueuedChatResponse | ChatResponse
                     "message": request.message,
                     "session_id": session_id,
                     "has_image": image is not None,
+                    "triage": triage,
                 },
                 settings.audit_llm_cap_chars,
             ),
             session_id=session_id,
         )
-        logger.info("job.enqueued", job_id=task.id, session_id=session_id, has_image=image is not None)
+        logger.info(
+            "job.enqueued",
+            job_id=task.id,
+            session_id=session_id,
+            has_image=image is not None,
+            triage=triage,
+        )
     except SessionExpiredError:
         raise HTTPException(
             status_code=410,
             detail="Session expired or not found. Start a new session.",
         )
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Job queue unavailable: {exc}")
 
     return QueuedChatResponse(job_id=task.id, session_id=session_id, status="queued")
 
 
+async def _unknown_job(job_id: str) -> bool:
+    """True when no result exists AND the job was never enqueued.
+
+    ``get_task_meta`` returns a PENDING stub for unknown ids, so the Redis
+    enqueue marker (written by ``mark_enqueued``) is the existence oracle.
+    """
+    meta = process_turn.AsyncResult(job_id).backend.get_task_meta(job_id)
+    if meta.get("status") != "PENDING":
+        return False
+    return not await job_exists(job_id)
+
+
 @app.get("/v1/jobs/{job_id}", response_model=JobResponse)
 async def job_status(job_id: str) -> JobResponse:
-    result = process_turn.AsyncResult(job_id)
-    meta = result.backend.get_task_meta(job_id)
-    if meta is None and not await job_exists(job_id):
+    if await _unknown_job(job_id):
         raise HTTPException(status_code=404, detail="Job not found")
+    result = process_turn.AsyncResult(job_id)
 
     if not result.ready():
         status = "processing" if result.state == "STARTED" else "pending"
@@ -356,9 +307,7 @@ async def job_events_stream(job_id: str, request: Request) -> StreamingResponse:
     clients never miss events). A final `event: result` or `event: error`
     message closes the stream once the Celery task finishes.
     """
-    result = process_turn.AsyncResult(job_id)
-    meta = result.backend.get_task_meta(job_id)
-    if meta is None and not await job_exists(job_id):
+    if await _unknown_job(job_id):
         raise HTTPException(status_code=404, detail="Job not found")
 
     try:
@@ -380,10 +329,33 @@ async def _stream_job_events(job_id: str, *, start: int = 0):
         while True:
             items, length = await read_events(job_id, start)
             for i, raw in enumerate(items):
-                yield f"id: {start + i}\nevent: pipeline\ndata: {raw}\n\n"
+                try:
+                    event = json.loads(raw)
+                except json.JSONDecodeError:
+                    event = None
+                # Buffered events carry a "type" for token streams; pipeline
+                # events (audit-shaped) stream under their own name.
+                name = "pipeline"
+                if isinstance(event, dict) and event.get("type") in ("token", "specialist_token"):
+                    name = event["type"]
+                yield f"id: {start + i}\nevent: {name}\ndata: {raw}\n\n"
             start = length
 
             if result.ready():
+                # The task only completes AFTER every token/event was appended,
+                # so one final read guarantees the buffer is fully flushed.
+                items, length = await read_events(job_id, start)
+                for i, raw in enumerate(items):
+                    try:
+                        event = json.loads(raw)
+                    except json.JSONDecodeError:
+                        event = None
+                    name = "pipeline"
+                    if isinstance(event, dict) and event.get("type") in ("token", "specialist_token"):
+                        name = event["type"]
+                    yield f"id: {start + i}\nevent: {name}\ndata: {raw}\n\n"
+                start = length
+
                 if result.successful():
                     logger.info("job.stream.done", job_id=job_id)
                     yield f"event: result\ndata: {json.dumps(result.result)}\n\n"
@@ -411,3 +383,42 @@ async def reset_session(session_id: str) -> None:
         session_id=session_id,
     )
     logger.info("session.reset", session_id=session_id)
+
+
+@app.get("/v1/audit", response_model=AuditListResponse)
+async def audit_log(id: str | None = None, limit: int = 50) -> AuditListResponse:
+    """Read-only view of the append-only audit trail, newest first.
+
+    Pass ``id`` (a session id) to scope the listing to one conversation;
+    omit it for the latest events across all sessions. ``limit`` caps the
+    page size (1–500).
+    """
+    if not 1 <= limit <= 500:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 500")
+
+    from sqlalchemy import select
+
+    from .core.db import SessionLocal
+    from .core.models import AuditEventRow
+
+    stmt = select(AuditEventRow).order_by(AuditEventRow.id.desc()).limit(limit)
+    if id is not None:
+        stmt = stmt.where(AuditEventRow.session_id == id)
+
+    async with SessionLocal() as db:
+        rows = (await db.execute(stmt)).scalars().all()
+
+    return AuditListResponse(
+        events=[
+            AuditRecord(
+                id=row.id,
+                session_id=row.session_id,
+                turn_id=row.turn_id,
+                module=row.module,
+                event_type=row.event_type,
+                payload=row.payload or {},
+                created_at=row.created_at,
+            )
+            for row in rows
+        ]
+    )

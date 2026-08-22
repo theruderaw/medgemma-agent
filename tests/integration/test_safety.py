@@ -1,0 +1,110 @@
+"""Safety behavior: the regex emergency floor and always-on output guardrails."""
+
+import json
+
+import pytest
+
+from app.safety.output import DIAGNOSTIC_CAUTION
+
+from .conftest import wait_for_job
+
+pytestmark = pytest.mark.asyncio
+
+
+def _guard_verdict(**flags) -> str:
+    base = {
+        "diagnostic_claim": False,
+        "missing_disclaimer": False,
+        "emergency_bypass": False,
+        "triage_contradiction": False,
+        "unsafe_wording": False,
+        "reasoning": "test verdict",
+    }
+    base.update(flags)
+    return json.dumps(base)
+
+
+LONG_CLEAN_REPLY = (
+    "Elbow pain after activity is common and often settles with rest. Apply ice "
+    "for fifteen minutes a few times a day, avoid movements that provoke the pain, "
+    "and use an over-the-counter pain reliever if that suits you. If the pain lasts "
+    "beyond two weeks, worsens, or comes with numbness or swelling, please see a "
+    "clinician for a hands-on assessment."
+)
+
+
+class TestEmergencyFloor:
+    async def test_red_flag_short_circuits_synchronously(self, client, fake_ollama):
+        response = await client.post("/v1/chat", json={"message": "I have chest pain"})
+        assert response.status_code == 200
+        body = response.json()
+
+        assert body["urgency"] == "emergency"
+        assert "emergency" in body["response"].lower()
+        assert any(e["event_type"] == "safety_override" for e in body["events"])
+
+        # No model ran: the floor is pure application code.
+        assert fake_ollama.calls("route") == []
+        assert fake_ollama.calls("specialist") == []
+        assert fake_ollama.calls("triage") == []
+
+    async def test_floor_precedes_triage_opt_in_and_images(self, client, fake_ollama, tiny_png):
+        response = await client.post(
+            "/v1/chat",
+            params={"triage": "true"},
+            json={
+                "message": "severe bleeding since the accident",
+                "image_b64": tiny_png,
+                "image_mime": "image/png",
+            },
+        )
+        assert response.status_code == 200
+        assert response.json()["urgency"] == "emergency"
+        assert fake_ollama.calls("specialist") == []
+
+
+class TestOutputGuardrails:
+    async def _completed_result(self, client, job_id) -> dict:
+        return (await wait_for_job(client, job_id))["result"]
+
+    async def test_guard_model_consulted_on_long_triaged_turns(self, client, fake_ollama):
+        """Urgency set + reply ≥ guard_min_chars → the guard model must run."""
+        fake_ollama.configure(chat_reply=LONG_CLEAN_REPLY)
+
+        response = await client.post(
+            "/v1/chat", params={"triage": "true"}, json={"message": "my elbow hurts"}
+        )
+        result = await self._completed_result(client, response.json()["job_id"])
+
+        assert len(fake_ollama.calls("guard")) == 1
+        assert "output_guardrail" not in [e["event_type"] for e in result["events"]]
+        assert result["response"].startswith("Elbow pain")
+
+    async def test_diagnostic_claim_gets_caution_appended(self, client, fake_ollama):
+        long_reply = (
+            "You definitely have tennis elbow. This is certainly a case of lateral "
+            "epicondylitis caused by your grip technique, and the pain will keep "
+            "getting worse every single day until it is treated by a professional."
+        )
+        fake_ollama.configure(
+            chat_reply=long_reply,
+            guard_json=_guard_verdict(diagnostic_claim=True),
+        )
+
+        response = await client.post(
+            "/v1/chat", params={"triage": "true"}, json={"message": "my elbow hurts"}
+        )
+        result = await self._completed_result(client, response.json()["job_id"])
+
+        guard_events = [e for e in result["events"] if e["event_type"] == "output_guardrail"]
+        assert guard_events, "diagnostic claim must be flagged"
+        assert "diagnostic_claim" in guard_events[0]["payload"]["violations"]
+        assert DIAGNOSTIC_CAUTION in result["response"]
+
+    async def test_clean_short_reply_skips_guard_model(self, client, fake_ollama):
+        response = await client.post("/v1/chat", json={"message": "my arm hurts"})
+        result = await self._completed_result(client, response.json()["job_id"])
+
+        # No triage urgency + short reply → deterministic gate skips the LLM call.
+        assert fake_ollama.calls("guard") == []
+        assert "output_guardrail" not in [e["event_type"] for e in result["events"]]
