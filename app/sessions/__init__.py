@@ -1,13 +1,9 @@
-from .base import SessionStore
-from .manager import SessionManager, sessions
-from .models import Session, SessionExpiredError
-from .postgres import PostgresSessionStore
+"""Session lifecycle: Postgres-backed store, manager singleton, expiry."""
+
+from .manager import sessions
+from .models import SessionExpiredError
 
 __all__ = [
-    "Session",
     "SessionExpiredError",
-    "SessionManager",
-    "SessionStore",
-    "PostgresSessionStore",
     "sessions",
 ]

@@ -64,6 +64,11 @@ class StreamExtractor:
         self.done = False
 
     def feed(self, delta: str) -> str:
+        """Consume one stream delta, returning only user-visible text.
+
+        Holds back partial opening tags until they can be ruled out; once
+        the closing tag is seen, everything further is suppressed.
+        """
         if self.done:
             return ""
         self.buf += delta
@@ -80,4 +85,5 @@ class StreamExtractor:
         return out
 
     def finish(self) -> str:
+        """Flush any held-back text at end of stream if the wrapper never closed."""
         return "" if self.done else self.buf.strip()

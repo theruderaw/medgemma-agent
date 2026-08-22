@@ -43,6 +43,11 @@ class LLMClient:
         temperature: float = 0.7,
         model: str | None = None,
     ) -> str:
+        """Single-shot chat completion (OpenAI-compatible /v1/chat/completions).
+
+        Returns the full reply text; used for synthesis when no token
+        streaming is requested and for routing without tools.
+        """
         model = model or settings.model_name
         logger.info("llm.chat", model=model, temperature=temperature)
         payload = {
