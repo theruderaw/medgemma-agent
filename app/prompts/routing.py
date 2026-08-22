@@ -11,26 +11,3 @@ ROUTING_SYSTEM_PROMPT = (
     "life-threatening situation, still respond with clear advice to seek "
     "immediate emergency care, and do not call the specialist tool for it."
 )
-
-SPECIALIST_TOOL = {
-    "type": "function",
-    "function": {
-        "name": "call_medical_specialist",
-        "description": (
-            "Call when the user describes a health symptom or medical concern, "
-            "or attaches an image of a visible symptom (rash, wound, swelling, "
-            "skin change), that would benefit from a clinical specialist's "
-            "assessment."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "reason": {
-                    "type": "string",
-                    "description": "Concise summary of why specialist input is needed.",
-                }
-            },
-            "required": ["reason"],
-        },
-    },
-}
