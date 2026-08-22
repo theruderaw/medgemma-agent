@@ -18,7 +18,7 @@
 
 ## Current status
 
-- **Active step:** Step 0 complete — next is Step 1 (`02-step1-feature-interface.md`, task 1.1)
+- **Active step:** Step 1 complete — next is Step 2 (`03-step2-migrate-specialist.md`, task 2.1)
 - **Last updated by:** ox-alpha session, 2026-08-22
 - **Blockers / open questions:** none. See `CLEANUP_NOTES.md` (delete after Step 2 absorbs it).
 
@@ -49,13 +49,13 @@ dispatch.
 ---
 
 ## Step 1 — Feature Interface & Registry (`02-step1-feature-interface.md`)
-- [ ] 1.1 `app/features/base.py` created (`SafetyProfile`, `ToolSchema`, `Feature`)
-- [ ] 1.2 `app/features/registry.py` created (`register`, `get`, `enabled_features`, `tool_schemas`)
-- [ ] 1.3 Confirmed `app/services/chat.py` untouched, package imports cleanly
-- [ ] 1.4 Scratch/dummy feature used to validate interface, then deleted
-- [ ] `pytest` green, zero behavior change
+- [x] 1.1 `app/features/base.py` created (`SafetyProfile`, `ToolSchema`, `Feature`)
+- [x] 1.2 `app/features/registry.py` created (`register`, `get`, `enabled_features`, `tool_schemas`)
+- [x] 1.3 Confirmed `app/services/chat.py` untouched, package imports cleanly
+- [x] 1.4 Scratch/dummy feature used to validate interface, then deleted
+- [x] `pytest` green, zero behavior change
 
-**Notes:**
+**Notes:** Step 1 complete. `app/features/` created, interface and registry implemented. Verified via scratch script (deleted) and `pytest` (all 35 passed). No behavior changes.
 
 ---
 
