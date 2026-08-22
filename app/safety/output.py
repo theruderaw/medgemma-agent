@@ -21,8 +21,10 @@ import httpx
 
 from ..core.config import settings
 from ..core.logging import get_logger
+from ..features.base import SafetyProfile
 from ..llm import llm
 from ..triage import Urgency
+from .invariants import PROFESSIONAL_REVIEW_NOTE
 from .rules import EMERGENCY_RESPONSE, detect_emergency
 
 logger = get_logger("app.safety.output")
@@ -95,12 +97,16 @@ async def run_output_guard(
     *,
     urgency: Urgency | None,
     message: str,
+    safety_profile: SafetyProfile | None = None,
 ) -> GuardedResponse:
     """Judge a draft reply and apply deterministic fixes.
 
     Fail-open by design: if the guard model errors or returns an
     unparseable verdict, the draft passes through unchanged (the
     deterministic emergency floor has already run at that point).
+    ``safety_profile`` may only ADD a professional-review note on top of
+    fixes the guard already applied for features that require review; it
+    never weakens a check and never touches the emergency replacement.
     """
     violations: list[str] = []
     actions: list[str] = []
@@ -156,6 +162,22 @@ async def run_output_guard(
         # The deterministic floor owns true emergencies; at lower urgencies a
         # bypass verdict earns the escalation note rather than a full replace.
         add_note("emergency_bypass", "append_escalation_note", ESCALATION_NOTE)
+
+    # Profile-driven, strictly additive: features that require professional
+    # review reinforce any corrections the guard already applied with the
+    # review note — never added to an otherwise-clean reply, never on the
+    # emergency path.
+    if (
+        safety_profile is not None
+        and safety_profile.requires_professional_review
+        and violations
+        and urgency is not Urgency.EMERGENCY
+    ):
+        add_note(
+            "professional_review_required",
+            "append_professional_review_note",
+            PROFESSIONAL_REVIEW_NOTE,
+        )
 
     guarded = text
     for note in notes:

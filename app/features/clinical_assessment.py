@@ -8,6 +8,7 @@ context builder, all moved verbatim from ``app/prompts/routing.py``,
 pipeline; only ownership moved.
 """
 
+from ..prompts.specialist import SPECIALIST_FORMAT
 from ..specialist import SpecialistResult, parse_specialist_result
 from .base import SafetyProfile, ToolSchema
 
@@ -74,6 +75,8 @@ class ClinicalAssessmentFeature:
         requires_professional_review=True,
         disclaimer_level="high",
     )
+    model_setting = "specialist_model_name"
+    format_schema = SPECIALIST_FORMAT
 
     def parse(self, raw_model_output: str) -> SpecialistResult:
         return parse_specialist_result(raw_model_output)

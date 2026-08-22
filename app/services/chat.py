@@ -10,6 +10,7 @@ from ..core.config import settings
 from ..core.images import ProcessedImage, persist_image
 from ..core.logging import get_logger
 from ..features import registry as feature_registry
+from ..features.medication_interaction import MedicationPair
 from ..llm import StreamExtractor, extract_answer, llm
 from ..prompts import (
     ROUTING_SYSTEM_PROMPT,
@@ -20,7 +21,7 @@ from ..routes import RouteCategory, RouteDecision, parse_tool_calls
 from ..safety import EMERGENCY_RESPONSE, detect_emergency, enforce_safety_invariants, run_output_guard
 from ..sessions import sessions
 from ..specialist import SpecialistResult
-from ..triage import Urgency
+from ..triage import TriageResult, Urgency
 from .triage import run_triage
 
 logger = get_logger("app.services.chat")
@@ -264,7 +265,8 @@ async def run_chat_turn(
             },
         )
 
-        specialist: SpecialistResult | None = None
+        specialist: SpecialistResult | TriageResult | MedicationPair | None = None
+        feature = None
         if decision.category is RouteCategory.SYMPTOM_RELATED:
             feature = feature_registry.get(decision.feature_name)
             if feature is None:
@@ -274,16 +276,18 @@ async def run_chat_turn(
                 {"role": "system", "content": feature.system_prompt},
                 {"role": "user", "content": reason},
             ]
-            # The specialist always returns a complete structured result
-            # (format-constrained JSON) — uncertainty survives as data, not
-            # prose that a downstream model may reinterpret. The JSON streams
-            # in live: each delta is forwarded as it is generated.
+            # The selected feature always returns a complete structured
+            # result (format-constrained JSON) — uncertainty survives as
+            # data, not prose that a downstream model may reinterpret. The
+            # JSON streams in live: each delta is forwarded as it is generated.
             started = time.monotonic()
             specialist_parts: list[str] = []
+            stream_model = getattr(settings, feature.model_setting)
             async for delta in llm.specialist_stream(
                 specialist_messages,
                 images=[image.b64] if image is not None else None,
-                model=settings.specialist_model_name,
+                model=stream_model,
+                output_format=feature.format_schema,
             ):
                 specialist_parts.append(delta)
                 if on_specialist_token is not None:
@@ -297,7 +301,7 @@ async def run_chat_turn(
                 {
                     "reason": reason,
                     "result": specialist.to_dict(),
-                    "model": settings.specialist_model_name,
+                    "model": stream_model,
                     "with_image": image is not None,
                     "duration_ms": specialist_ms,
                 },
@@ -344,11 +348,18 @@ async def run_chat_turn(
         # always on regardless of OUTPUT_GUARDRAILS. The emergency floor here
         # makes an emergency triage impossible to downgrade.
         limitations = list(triage_result.limitations) if triage_result else []
-        specialist_uncertain = specialist.uncertain if specialist else False
+        # Not every feature result carries uncertainty/body-part signals;
+        # absent signals degrade to False (never to an invented claim).
+        specialist_uncertain = (
+            bool(specialist.uncertain) if specialist and hasattr(specialist, "uncertain") else False
+        )
         if specialist:
-            limitations += [item for item in specialist.limitations if item not in limitations]
+            extra_limitations = getattr(specialist, "limitations", None) or []
+            limitations += [item for item in extra_limitations if item not in limitations]
         body_part_unknown = (
-            image is not None and specialist is not None and specialist.body_part_unknown
+            image is not None
+            and specialist is not None
+            and bool(getattr(specialist, "body_part_unknown", False))
         )
         enforced = enforce_safety_invariants(
             text,
@@ -358,6 +369,7 @@ async def run_chat_turn(
             limitations=limitations,
             body_part_unknown=body_part_unknown,
             image_analyzed=image is not None,
+            safety_profile=feature.safety_profile if feature else None,
         )
         safety_blocked = bool(enforced.violations)
         if safety_blocked:
@@ -375,7 +387,12 @@ async def run_chat_turn(
 
         # Output guardrails are always on: every reply is judged before it is
         # stored or returned.
-        guarded = await run_output_guard(text, urgency=turn_urgency, message=message)
+        guarded = await run_output_guard(
+            text,
+            urgency=turn_urgency,
+            message=message,
+            safety_profile=feature.safety_profile if feature else None,
+        )
         if guarded.violations:
             safety_blocked = True
             await record(

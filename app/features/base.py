@@ -43,6 +43,12 @@ class Feature(Protocol):
     tool_schema: ToolSchema
     system_prompt: str
     safety_profile: SafetyProfile
+    # Settings attribute name holding the model that runs this feature's
+    # streamed stage (resolved by the dispatcher via getattr(settings, ...)).
+    model_setting: str
+    # Format-constrained JSON schema for the streamed stage. The constraint
+    # rides on the model call so parse() always receives the expected shape.
+    format_schema: dict[str, Any]
 
     def parse(self, raw_model_output: str) -> Any:
         """Parse raw model output into this feature's structured result type."""

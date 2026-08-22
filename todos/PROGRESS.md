@@ -18,10 +18,12 @@
 
 ## Current status
 
-- **Active step:** Step 2 complete — next is Step 3 (`04-step3-new-addons.md`, task 3.1)
+- **Active step:** Step 4 complete — next is Step 5 (`06-step5-feature-toggle-settings.md`, task 5.1)
 - **Last updated by:** ox-alpha session, 2026-08-22
-- **Blockers / open questions:** none. `CLEANUP_NOTES.md` deleted; its still-relevant
-  content (config-naming convention for Step 5) is preserved in the Step 5 section below.
+- **Blockers / open questions:** none. Step 3 + Step 4 changes are uncommitted
+  (user has not requested a commit). `CLEANUP_NOTES.md` deleted; its
+  still-relevant content (config-naming convention for Step 5) is preserved in
+  the Step 5 section below.
 
 ---
 
@@ -89,27 +91,72 @@ Suite now 36 passed (35 baseline + 1 new).
 ---
 
 ## Step 3 — New Add-on Features (`04-step3-new-addons.md`)
-- [ ] 3.1 `app/features/symptom_triage.py` — existing triage wrapped as a feature
-- [ ] 3.1a Always-on `triage=True` flag path confirmed untouched
-- [ ] 3.2 `app/features/medication_interaction.py` (optional — mark N/A if skipped)
-- [ ] 3.2a Curated dataset added under `app/features/data/`, LLM only phrases, never originates claims
-- [ ] 3.3 `app/features/lab_value_interpreter.py` (optional — mark N/A if skipped)
-- [ ] 3.4 All new features registered in `app/features/__init__.py`
-- [ ] 3.5 Integration tests added per new feature (incl. "no data" branch for medication feature)
-- [ ] `pytest` green including new tests
+- [x] 3.1 `app/features/symptom_triage.py` — existing triage wrapped as a feature
+- [x] 3.1a Always-on `triage=True` flag path confirmed untouched
+- [x] 3.2 `app/features/medication_interaction.py` (optional — mark N/A if skipped)
+- [x] 3.2a Curated dataset added under `app/features/data/`, LLM only phrases, never originates claims
+- [ ] 3.3 `app/features/lab_value_interpreter.py` — **N/A, skipped** (doc: #2 OR #3)
+- [x] 3.4 All new features registered in `app/features/__init__.py`
+- [x] 3.5 Integration tests added per new feature (incl. "no data" branch for medication feature)
+- [x] `pytest` green including new tests
 
-**Notes:**
+**Notes:** Suite 36 → 42 passed. Deviations / interface decisions: (1) The
+Feature protocol was completed ONCE (the doc's sanctioned "revisit the
+interface" path): added `model_setting` + `format_schema` members;
+`llm.specialist_stream` gained an optional `output_format` param (default
+keeps SPECIALIST_FORMAT); `run_chat_turn` resolves model/format from the
+selected feature. Required because a router-selected triage must be
+constrained to TRIAGE_FORMAT, not the hardcoded specialist schema. (2)
+Invariant inputs read defensively (`uncertain`, `body_part_unknown`,
+`limitations`) since feature results are heterogeneous dataclasses.
+(3) Medication deviates from the doc's literal "extract drugs from tool-call
+arguments": extraction happens in the streamed stage via
+MEDICATION_QUERY_FORMAT because dispatch never hands tool args to features;
+dataset still originates every claim and the unknown-pair branch yields the
+explicit no-data context (unit-tested). (4) Audit event module stays
+"specialist"/"specialist_output" for all streamed features to preserve the
+audit JSON shape; per-feature module naming deferred to Step 5. (5)
+`fake_ollama.py` extended: configurable router tool name + medication-format
+branch + `calls("medication")`.
 
 ---
 
 ## Step 4 — Per-Feature Safety Profiles (`05-step4-safety-profiles.md`)
-- [ ] 4.1 `app/safety/invariants.py` and `app/safety/output.py` read fully, `violations`/`actions` pattern confirmed
-- [ ] 4.2 `safety_profile` param added with `None` default, verified behavior-neutral
-- [ ] 4.3 Additive profile-driven disclaimer logic added
-- [ ] 4.4 `run_chat_turn` passes `feature.safety_profile` through
-- [ ] 4.5 Test: high-disclaimer feature gets extra note, low-disclaimer doesn't
-- [ ] 4.5a Test: emergency floor fires regardless of feature/profile (explicit, high priority)
-- [ ] `pytest` green
+- [x] 4.1 `app/safety/invariants.py` and `app/safety/output.py` read fully, `violations`/`actions` pattern confirmed
+- [x] 4.2 `safety_profile` param added with `None` default, verified behavior-neutral
+- [x] 4.3 Additive profile-driven disclaimer logic added
+- [x] 4.4 `run_chat_turn` passes `feature.safety_profile` through
+- [x] 4.5 Test: high-disclaimer feature gets extra note, low-disclaimer doesn't
+- [x] 4.5a Test: emergency floor fires regardless of feature/profile (explicit, high priority)
+- [x] `pytest` green
+
+**Notes:** Implemented in four verified stages (42 → 42 → 42 → 46 passed).
+(4.2) Signature-only first: `safety_profile: SafetyProfile | None = None` on
+`enforce_safety_invariants` + `run_output_guard`; suite confirmed unchanged
+before any logic landed. Doc snippet says `EnforcedResult`; kept the real
+class name `EnforcedResponse`. (4.3) invariants: `disclaimer_level == "high"`
+→ append `PROFESSIONAL_REVIEW_NOTE` via the existing `add()` helper
+(violation `profile_professional_review`, action
+`append_professional_review_note`) — placed after the emergency early-return,
+so the floor's replacement text is never touched by a profile. output guard:
+`requires_professional_review` note fires ONLY when the guard already found
+violations and urgency is not EMERGENCY — an always-on trigger would have
+broken the two existing tests asserting no `output_guardrail` event on clean
+specialist turns, and would also contradict the default-profile regression
+guarantee (`SafetyProfile.requires_professional_review` defaults to True).
+Note constant lives in `invariants.py`, imported by `output.py` (no cycle;
+`safety` → `features.base` is a leaf import). (4.4) chat.py hoists
+`feature = None` above the dispatch branch and passes
+`feature.safety_profile if feature else None` at both call sites.
+Observable effect on existing flows: specialist turns now append the review
+note and record one extra `safety_invariant` audit event — verified every
+existing assertion is subset/substring-based, so all 42 stayed green
+unchanged. (4.5/4.5a) New `TestSafetyProfiles` (4 tests): medication turn
+gets note + recorded violation/action; symptom-triage turn gets neither;
+red-flag message short-circuits before routing even when the router is set
+to select the strictest-profile feature (zero model calls); structured
+EMERGENCY triage + high-profile feature → template replaces draft and NO
+profile note is appended to it.
 
 **Notes:**
 
