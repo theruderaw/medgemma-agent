@@ -1,15 +1,5 @@
-from .config import settings
-from .db import SessionLocal, async_url, create_all, engine, get_session
-from .models import AuditEventRow, MessageRow, SessionRow
+"""Core infrastructure: config, database, models, context, images, logging.
 
-__all__ = [
-    "settings",
-    "SessionLocal",
-    "async_url",
-    "create_all",
-    "engine",
-    "get_session",
-    "AuditEventRow",
-    "MessageRow",
-    "SessionRow",
-]
+Consumers import from the concrete submodules (``app.core.config``,
+``app.core.db``, ...) — this package holds no re-exports.
+"""

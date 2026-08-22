@@ -1,19 +1,8 @@
-from .logger import (
-    AuditLogger,
-    CompositeAuditLogger,
-    JsonFileAuditLogger,
-    PostgresAuditLogger,
-    audit,
-    build_audit_logger,
-    trim_llm_payload,
-)
+"""Append-only audit logging (JSONL file + Postgres, always both)."""
+
+from .logger import audit, trim_llm_payload
 
 __all__ = [
-    "AuditLogger",
-    "CompositeAuditLogger",
-    "JsonFileAuditLogger",
-    "PostgresAuditLogger",
     "audit",
-    "build_audit_logger",
     "trim_llm_payload",
 ]

@@ -199,6 +199,7 @@ async def queued_chat(request: ChatRequest, triage: bool = False) -> QueuedChatR
             response=result.response,
             urgency=result.urgency,
             events=result.events or [],
+            path=result.path,
         )
 
     try:

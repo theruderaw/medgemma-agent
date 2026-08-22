@@ -1,8 +1,8 @@
-from .parsing import BODY_PART_VALUES, VALID_URGENCIES, TriageResult, Urgency, parse_triage_result
+"""Triage urgency enum and result parsing/validation."""
+
+from .parsing import TriageResult, Urgency, parse_triage_result
 
 __all__ = [
-    "BODY_PART_VALUES",
-    "VALID_URGENCIES",
     "TriageResult",
     "Urgency",
     "parse_triage_result",
