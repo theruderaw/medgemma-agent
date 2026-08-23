@@ -7,6 +7,7 @@
 // (GET /v1/jobs/{id}/events) with polling as the resilience fallback.
 
 import type {
+  AppConfig,
   AttachedImage,
   AuditEvent,
   AuditRecord,
@@ -18,6 +19,15 @@ import type {
   SessionHistory,
   TriageApiResponse,
 } from '../types';
+
+// Dev serves the API through the Vite proxy (VITE_BACKEND_URL); a production
+// build can point at a split-origin backend via VITE_API_BASE_URL. The empty
+// default keeps same-origin relative paths, so nothing changes today.
+const API_BASE = import.meta.env.VITE_API_BASE_URL ?? '';
+
+function apiUrl(path: string): string {
+  return `${API_BASE}${path}`;
+}
 
 export class ApiError extends Error {
   readonly status: number;
@@ -55,7 +65,7 @@ export async function enqueueTurn(
   image?: AttachedImage,
   triage = false,
 ): Promise<EnqueueResult> {
-  const res = await fetch(`/v1/chat${triage ? '?triage=true' : ''}`, {
+  const res = await fetch(apiUrl(`/v1/chat${triage ? '?triage=true' : ''}`), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ message, session_id: sessionId, ...imageFields(image) }),
@@ -94,7 +104,7 @@ const MAX_SSE_FAILURES = 3;
  * anything missed while disconnected. Returns a `close()` that stops watching.
  */
 export function watchJob(jobId: string, handlers: JobStreamHandlers): () => void {
-  const es = new EventSource(`/v1/jobs/${encodeURIComponent(jobId)}/events`);
+  const es = new EventSource(apiUrl(`/v1/jobs/${encodeURIComponent(jobId)}/events`));
   let closed = false;
   let failures = 0;
 
@@ -197,7 +207,7 @@ export async function pollUntilDone(
 }
 
 export async function pollJob(jobId: string): Promise<JobResponse> {
-  const res = await fetch(`/v1/jobs/${encodeURIComponent(jobId)}`);
+  const res = await fetch(apiUrl(`/v1/jobs/${encodeURIComponent(jobId)}`));
   if (!res.ok) {
     const data = (await res.json().catch(() => ({}))) as { detail?: string };
     throw new ApiError(res.status, data.detail ?? `Job lookup failed (${res.status})`);
@@ -211,7 +221,7 @@ export async function pollJob(jobId: string): Promise<JobResponse> {
 /** GET /health — API up + Redis broker reachable. */
 export async function health(): Promise<boolean> {
   try {
-    const res = await fetch('/health');
+    const res = await fetch(apiUrl('/health'));
     return res.ok;
   } catch {
     return false;
@@ -224,7 +234,7 @@ export async function health(): Promise<boolean> {
  * but never classified.
  */
 export async function triageCheck(message: string, image?: AttachedImage): Promise<TriageApiResponse> {
-  const res = await fetch('/v1/triage', {
+  const res = await fetch(apiUrl('/v1/triage'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ message, ...imageFields(image) }),
@@ -232,9 +242,19 @@ export async function triageCheck(message: string, image?: AttachedImage): Promi
   return json<TriageApiResponse>(res);
 }
 
-/** DELETE /v1/sessions/{id} — drop the conversation server-side. */
+/**
+ * DELETE /v1/sessions/{id} — drop the conversation server-side.
+ * Best-effort by contract: failures are reported but never thrown, so a
+ * reset blip cannot block starting a new chat. Server-side session leaks
+ * stay visible in the console instead of failing silently.
+ */
 export async function resetSession(sessionId: string): Promise<void> {
-  await fetch(`/v1/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
+  const res = await fetch(apiUrl(`/v1/sessions/${encodeURIComponent(sessionId)}`), {
+    method: 'DELETE',
+  });
+  if (!res.ok) {
+    console.warn(`resetSession failed (${res.status}) for session ${sessionId}`);
+  }
 }
 
 /** GET /v1/audit — newest-first audit trail, optionally scoped to a session id. */
@@ -245,7 +265,7 @@ export async function fetchAuditEvents(
   if (opts.id) q.set('id', opts.id);
   if (opts.limit != null) q.set('limit', String(opts.limit));
   const qs = q.toString();
-  const res = await fetch(`/v1/audit${qs ? `?${qs}` : ''}`);
+  const res = await fetch(apiUrl(`/v1/audit${qs ? `?${qs}` : ''}`));
   const data = await json<{ events: AuditRecord[] }>(res);
   return data.events;
 }
@@ -256,7 +276,7 @@ export async function fetchAuditEvents(
 /** GET /v1/features — registered add-ons; `sessionId` scopes the enabled flags. */
 export async function fetchFeatures(sessionId: string | null): Promise<FeatureInfo[]> {
   const qs = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
-  const res = await fetch(`/v1/features${qs}`);
+  const res = await fetch(apiUrl(`/v1/features${qs}`));
   const data = await json<{ features: FeatureInfo[] }>(res);
   return data.features;
 }
@@ -271,7 +291,7 @@ export async function toggleFeature(
   sessionId: string,
 ): Promise<FeatureInfo> {
   const res = await fetch(
-    `/v1/features/${encodeURIComponent(name)}?session_id=${encodeURIComponent(sessionId)}`,
+    apiUrl(`/v1/features/${encodeURIComponent(name)}?session_id=${encodeURIComponent(sessionId)}`),
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -283,13 +303,19 @@ export async function toggleFeature(
 
 /** GET /v1/sessions/{id}/messages — persisted conversation, oldest first. */
 export async function fetchSessionHistory(sessionId: string): Promise<SessionHistory> {
-  const res = await fetch(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`);
+  const res = await fetch(apiUrl(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`));
   return json<SessionHistory>(res);
 }
 
 /** GET /v1/sessions/recent — most recently active conversations, newest first. */
 export async function fetchRecentChats(limit = 20): Promise<RecentChat[]> {
-  const res = await fetch(`/v1/sessions/recent?limit=${limit}`);
+  const res = await fetch(apiUrl(`/v1/sessions/recent?limit=${limit}`));
   const data = await json<{ chats: RecentChat[] }>(res);
   return data.chats;
+}
+
+/** GET /v1/config — upload limits so the UI never hardcodes backend policy. */
+export async function fetchConfig(): Promise<AppConfig> {
+  const res = await fetch(apiUrl('/v1/config'));
+  return json<AppConfig>(res);
 }

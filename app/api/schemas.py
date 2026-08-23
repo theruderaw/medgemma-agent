@@ -100,6 +100,17 @@ class TriageResponse(BaseModel):
         )
 
 
+class AppConfigResponse(BaseModel):
+    """Public client configuration: upload limits the UI pre-checks against.
+
+    Mirrors what the backend enforces on every upload regardless; served so
+    the frontend never hardcodes backend policy.
+    """
+
+    image_max_bytes: int
+    image_allowed_mime: list[str]
+
+
 class FeatureInfo(BaseModel):
     name: str
     description: str

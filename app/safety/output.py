@@ -101,12 +101,14 @@ async def run_output_guard(
 ) -> GuardedResponse:
     """Judge a draft reply and apply deterministic fixes.
 
-    Fail-open by design: if the guard model errors or returns an
-    unparseable verdict, the draft passes through unchanged (the
-    deterministic emergency floor has already run at that point).
-    ``safety_profile`` may only ADD a professional-review note on top of
-    fixes the guard already applied for features that require review; it
-    never weakens a check and never touches the emergency replacement.
+    Runs on every turn regardless of the triage opt-in; only replies shorter
+    than ``GUARD_MIN_CHARS`` skip the guard model deterministically. Fail-open
+    by design: if the guard model errors or returns an unparseable verdict,
+    the draft passes through unchanged (the deterministic emergency floor has
+    already run at that point). ``safety_profile`` may only ADD a
+    professional-review note on top of fixes the guard already applied for
+    features that require review; it never weakens a check and never touches
+    the emergency replacement.
     """
     violations: list[str] = []
     actions: list[str] = []
@@ -122,10 +124,12 @@ async def run_output_guard(
                 actions=["replace_emergency_response"],
             )
 
-    # Deterministic pre-gate: chit-chat turns (no triage result) and very
-    # short replies are the dominant false-positive class for the small
-    # guard model — skip the LLM call entirely for them.
-    if urgency is None or len(text.strip()) < settings.guard_min_chars:
+    # Deterministic pre-gate: very short replies are the dominant
+    # false-positive class for the small guard model — skip the LLM call for
+    # them. Every other reply is judged regardless of the triage opt-in:
+    # most turns run without triage, so keying the gate on urgency would
+    # leave the default flow unguarded entirely.
+    if len(text.strip()) < settings.guard_min_chars:
         logger.info(
             "guard.gate.skipped",
             urgency=urgency.value if urgency is not None else None,
@@ -156,7 +160,7 @@ async def run_output_guard(
         add_note("unsafe_wording", "append_medication_caution", MEDICATION_CAUTION)
     if verdict["triage_contradiction"] and urgency in (Urgency.URGENT, Urgency.EMERGENCY):
         add_note("triage_contradiction", "append_escalation_note", ESCALATION_NOTE)
-    if verdict["missing_disclaimer"] and urgency is not None:
+    if verdict["missing_disclaimer"]:
         add_note("missing_disclaimer", "append_disclaimer", DISCLAIMER)
     if verdict["emergency_bypass"] and urgency is not Urgency.EMERGENCY:
         # The deterministic floor owns true emergencies; at lower urgencies a

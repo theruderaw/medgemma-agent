@@ -45,9 +45,13 @@ class StreamExtractor:
 
     With ``enable_thinking: false`` the wrapper is consistent: when present it
     leads the content. The extractor holds back only the first few characters to
-    detect a leading ``<response>`` tag, then streams everything eagerly and
-    stops at the closing tag — so clients get real incremental tokens and never
-    see the wrapper markup.
+    detect a leading ``<response>`` tag, then streams every delta through
+    untouched and stops at the closing tag — so clients get real incremental
+    tokens and never see the wrapper markup.
+
+    A small tail (``len(CLOSE_TAG) - 1`` characters) is held back between
+    calls so a closing tag split across two deltas is still detected; the
+    tail is flushed by :meth:`finish` when the stream ends without one.
 
     Deliberation preambles WITHOUT the wrapper cannot be stripped live without
     buffering the whole stream; they are removed from the persisted/final
@@ -60,30 +64,49 @@ class StreamExtractor:
     CLOSE_TAG = "</response>"
 
     def __init__(self) -> None:
-        self.buf = ""
+        self._checked_open = False  # one-time: is the stream <response>-wrapped?
+        self._tail = ""  # held back so a split closing tag stays detectable
         self.done = False
 
     def feed(self, delta: str) -> str:
         """Consume one stream delta, returning only user-visible text.
 
-        Holds back partial opening tags until they can be ruled out; once
-        the closing tag is seen, everything further is suppressed.
+        Holds back a partial opening tag until it can be ruled out, and a
+        partial closing tag until the next call resolves it; once the closing
+        tag is seen, everything further is suppressed.
         """
         if self.done:
             return ""
-        self.buf += delta
-        if len(self.buf) < len(self.OPEN_TAG):
-            return ""
-        if self.buf.startswith(self.OPEN_TAG):
-            self.buf = self.buf[len(self.OPEN_TAG):]
-        out = self.buf
-        self.buf = ""
-        cidx = out.find(self.CLOSE_TAG)
+        text = self._tail + delta
+        self._tail = ""
+
+        if not self._checked_open:
+            if len(text) < len(self.OPEN_TAG):
+                if self.OPEN_TAG.startswith(text):
+                    # Could still grow into the opening tag — keep holding.
+                    self._tail = text
+                    return ""
+                self._checked_open = True
+            else:
+                self._checked_open = True
+                if text.startswith(self.OPEN_TAG):
+                    text = text[len(self.OPEN_TAG) :]
+
+        cidx = text.find(self.CLOSE_TAG)
         if cidx >= 0:
-            out = out[:cidx]
             self.done = True
-        return out
+            return text[:cidx]
+
+        hold = min(len(self.CLOSE_TAG) - 1, len(text))
+        self._tail = text[len(text) - hold :]
+        return text[: len(text) - hold]
 
     def finish(self) -> str:
-        """Flush any held-back text at end of stream if the wrapper never closed."""
-        return "" if self.done else self.buf.strip()
+        """Flush any held-back text at end of stream if the wrapper never closed.
+
+        Returned verbatim: the tail is ordinary body text whenever the
+        open-tag probe resolved, so stripping here would corrupt streamed
+        wording (e.g. eat a sentence's separating space).
+        """
+        tail, self._tail = self._tail, ""
+        return "" if self.done else tail

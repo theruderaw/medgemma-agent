@@ -16,7 +16,7 @@ and a React/Vite chat frontend.
 | **Qwen3-4B** | `MODEL_NAME` | Orchestrator / router / plain-language synthesis |
 | **MedGemma 4B** (`medgemma1.5:4b`) | `SPECIALIST_MODEL_NAME` | Clinical specialist note (streamed); multimodal tier for image analysis |
 | **MedGemma 4B** (`medgemma1.5:4b`) | `TRIAGE_MODEL_NAME` | Opt-in triage classifier — **text-only**, schema-constrained |
-| **Qwen3-0.6B** | `GUARD_MODEL_NAME` | Output-guardrail judge (always on; skips replies < `GUARD_MIN_CHARS` or without a triage urgency) |
+| **Qwen3-0.6B** | `GUARD_MODEL_NAME` | Output-guardrail judge (always on; skips replies < `GUARD_MIN_CHARS`) |
 
 Plus a deterministic, non-model red-flag safety floor that runs on every turn.
 
@@ -99,9 +99,9 @@ against five violation categories: definitive diagnostic claims, missing
 disclaimers, emergency-path bypasses, contradictions with structured triage,
 and unsafe wording. Verdicts map to deterministic fixes (append a fixed safety
 note or replace with the emergency directive), so the model decides *whether*
-something is wrong — never *how* to fix it. Always on; the LLM call is skipped
-deterministically for replies shorter than `GUARD_MIN_CHARS` or turns without a
-triage urgency (the dominant false-positive class).
+something is wrong — never *how* to fix it. Always on regardless of the triage
+opt-in; the LLM call is skipped deterministically for replies shorter than
+`GUARD_MIN_CHARS`.
 
 ## Routing
 
@@ -235,7 +235,9 @@ broker is down and jobs will sit enqueued.
 The React/Vite UI streams every turn through the job-events SSE channel,
 offers a per-message triage toggle, and ships a Logs page over `GET /v1/audit`
 (module filters, session filter, expandable payloads). `VITE_BACKEND_URL`
-points the dev proxy at a non-default API origin; build with `npm run build`.
+points the dev proxy at a non-default API origin; `VITE_API_BASE_URL` (build
+time, default same-origin) points a production build (`npm run build`) at a
+backend on another origin.
 
 ## Use
 
