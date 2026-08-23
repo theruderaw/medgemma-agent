@@ -10,6 +10,7 @@ const MODULE_TONES: Record<string, 'accent' | 'safety' | 'high' | 'neutral'> = {
   triage: 'high',
   specialist: 'neutral',
   image: 'high',
+  feature: 'high',
   session: 'accent',
   job: 'neutral',
   features: 'accent',

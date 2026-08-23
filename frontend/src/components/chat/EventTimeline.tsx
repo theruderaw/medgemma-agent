@@ -12,6 +12,7 @@ const MODULE_ACCENT: Record<string, string> = {
   router: 'border-accent-400',
   specialist: 'border-emerald-500',
   image: 'border-amber-400',
+  feature: 'border-orange-500',
   chat: 'border-slate-500',
 };
 
@@ -26,10 +27,14 @@ function stepLabel(ev: AuditEvent): string {
       return p.source === 'vision' ? 'Triage (vision)' : 'Triage';
     case 'routing_decision':
       if (p.image_override) return 'Image → specialist';
+      if (p.keyword_override) return 'Keyword → feature';
       return p.category === 'symptom_related' ? 'Call specialist' : 'Routing';
     case 'specialist_output':
-      return 'Specialist note';
+      return p.mode === 'deterministic' ? 'Feature (deterministic)' : 'Specialist note';
+    case 'feature_failed':
+      return `Feature failed (${p.feature ?? 'unknown'})`;
     case 'turn_completed':
+      if (p.path === 'feature_unavailable') return 'Feature unavailable fallback';
       return 'Synthesis';
     default:
       return ev.event_type;
@@ -80,10 +85,23 @@ function EventPayload({ ev }: { ev: AuditEvent }) {
           {Array.isArray(p.tools) && kv('tools', (p.tools as unknown[]).join(', '))}
           {p.duration_ms != null && kv('duration_ms', p.duration_ms)}
           {p.image_override != null && kv('image_override', p.image_override)}
+          {p.keyword_override != null && kv('keyword_override', p.keyword_override)}
         </div>
       );
     case 'specialist_output':
-      return kv('model', p.model);
+      return (
+        <div className="flex flex-col gap-1">
+          {kv('model', p.model)}
+          {p.mode != null && kv('mode', p.mode)}
+        </div>
+      );
+    case 'feature_failed':
+      return (
+        <div className="flex flex-col gap-1">
+          {kv('feature', p.feature)}
+          {kv('error', p.error)}
+        </div>
+      );
     case 'turn_completed':
       return kv('model', p.model);
     default:

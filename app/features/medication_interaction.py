@@ -1,12 +1,23 @@
-"""Medication-interaction check — dataset-backed, LLM-phrased only.
+"""Medication-interaction check — dataset-backed, deterministic-first.
 
 Unlike the other features, the interaction claim itself NEVER originates
-from a model: ``parse()`` extracts exactly two medication names from the
-model's structured output, and ``context_for()`` looks the pair up in the
-curated dataset (``app/features/data/drug_interactions.json``). The model
-only ever phrases/explains what the dataset states. An unknown pair yields
+from a model: the pair is looked up in the curated dataset
+(``app/features/data/drug_interactions.json``) and any model output is only
+ever used to phrase/explain what the dataset states. An unknown pair yields
 an explicit no-data message — never silence, which would read as "no
 interaction exists" (a false negative with real safety consequences).
+
+This feature additionally implements the optional dispatcher capability
+hooks (see ``app/features/base.py``):
+
+- ``deterministic_extract`` — regex-over-known-aliases extraction from the
+  message + recent history. Returns None when fewer than two known drugs are
+  present so the streamed LLM extraction stage remains the fallback.
+- ``deterministic_reply``   — severity-keyed template phrasing straight from
+  the dataset entry (the synthesis LLM is skipped; safety layers still run).
+- ``route_trigger``         — conservative keyword claim used only when the
+  router decided GENERAL: requires at least one known drug in the *current*
+  message and two distinct known drugs across message + recent history.
 """
 
 import json
@@ -34,6 +45,26 @@ _NO_DATA_CONTEXT = (
     "pharmacist or clinician before combining the medications. NEVER state "
     "or imply that no interaction exists."
 )
+
+_NO_DATA_REPLY = (
+    "{drug_a} + {drug_b} is not in our checked reference data, so nothing "
+    "can be concluded about this combination either way — do not take that "
+    "as evidence it is safe. Please consult a pharmacist or clinician "
+    "before combining these medications."
+)
+
+_REPLY_TEMPLATE = (
+    "Interaction check: {drug_a} + {drug_b} — {severity} severity.\n"
+    "What can happen: {effect}\n"
+    "What to do: {guidance}\n"
+    "This is a reference-database lookup, not a personal medical "
+    "assessment. Confirm with your doctor or pharmacist before combining "
+    "or changing any medications."
+)
+
+# How much conversation history the deterministic scanner considers (tail of
+# the built message list, user messages only).
+_HISTORY_WINDOW = 12
 
 
 # Placeholder values a model may emit instead of a real drug name. Any of
@@ -64,10 +95,64 @@ def _extract_json_object(raw: str) -> dict:
 
 
 @lru_cache(maxsize=1)
-def _load_interactions() -> dict:
+def _load_dataset() -> tuple[dict, dict[str, str]]:
+    """Load the curated dataset once: (interactions, alias->generic index).
+
+    Aliases whose target is not a drug appearing in some interaction key are
+    ignored — an alias must never introduce a drug the dataset cannot answer
+    for. Generic names always map to themselves.
+    """
     path = Path(__file__).parent / "data" / "drug_interactions.json"
     with path.open(encoding="utf-8") as handle:
-        return json.load(handle)["interactions"]
+        data = json.load(handle)
+    interactions: dict = data["interactions"]
+    known = {name for key in interactions for name in key.split("+")}
+    aliases: dict[str, str] = {}
+    for alias, generic in data.get("aliases", {}).items():
+        if alias.startswith("_"):
+            continue
+        if generic in known:
+            aliases[alias.lower()] = generic
+    for name in known:
+        aliases.setdefault(name, name)
+    return interactions, aliases
+
+
+def _load_interactions() -> dict:
+    return _load_dataset()[0]
+
+
+@lru_cache(maxsize=1)
+def _drug_pattern() -> re.Pattern:
+    """Single case-insensitive word-boundary alternation over every known
+    name/alias, longest first so brand multi-words win over substrings."""
+    _, aliases = _load_dataset()
+    alternatives = "|".join(
+        re.escape(name) for name in sorted(aliases, key=len, reverse=True)
+    )
+    return re.compile(rf"\b(?:{alternatives})\b", re.IGNORECASE)
+
+
+def _history_texts(history: list[dict] | None) -> list[str]:
+    if not history:
+        return []
+    return [
+        str(msg.get("content") or "")
+        for msg in history[-_HISTORY_WINDOW:]
+        if msg.get("role") == "user"
+    ]
+
+
+def _find_drugs(*texts: str) -> set[str]:
+    """Canonical generic names mentioned anywhere in the given texts."""
+    _, aliases = _load_dataset()
+    found: set[str] = set()
+    for text in texts:
+        if not text:
+            continue
+        for match in _drug_pattern().finditer(text):
+            found.add(aliases[match.group(0).lower()])
+    return found
 
 
 class MedicationInteractionFeature:
@@ -116,6 +201,53 @@ class MedicationInteractionFeature:
     )
     model_setting = "specialist_model_name"
     format_schema = MEDICATION_QUERY_FORMAT
+    unavailable_reply = (
+        "The medication interaction check is temporarily unavailable, so I "
+        "could not look this combination up. Please consult a pharmacist or "
+        "clinician before combining or changing any medications."
+    )
+
+    def deterministic_extract(self, text: str, history: list[dict]) -> MedicationPair | None:
+        """Deterministic pair extraction over known names/aliases.
+
+        Scans the current message plus the recent history tail. Returns None
+        when fewer than two distinct known drugs are present anywhere, leaving
+        the LLM extraction stage as the fallback for fuzzy cases (misspellings,
+        unrecognized brands, pronoun-only follow-ups).
+        """
+        found = _find_drugs(text, *_history_texts(history))
+        if len(found) < 2:
+            return None
+        drug_a, drug_b = sorted(found)[:2]
+        return MedicationPair(drug_a=drug_a, drug_b=drug_b)
+
+    def route_trigger(self, text: str, history: list[dict]) -> bool:
+        """Conservative deterministic routing claim.
+
+        Requires at least one known drug in the *current* message (so ordinary
+        conversation is never hijacked by stale history) and two distinct
+        known drugs across message + recent history tail.
+        """
+        current = _find_drugs(text)
+        if not current:
+            return False
+        total = current | _find_drugs(*_history_texts(history))
+        return len(total) >= 2
+
+    def deterministic_reply(self, result: MedicationPair) -> str:
+        """Template phrasing straight from the curated dataset entry."""
+        entry = _load_interactions().get(
+            "+".join(sorted((result.drug_a, result.drug_b)))
+        )
+        if entry is None:
+            return _NO_DATA_REPLY.format(drug_a=result.drug_a, drug_b=result.drug_b)
+        return _REPLY_TEMPLATE.format(
+            drug_a=result.drug_a,
+            drug_b=result.drug_b,
+            severity=entry["severity"],
+            effect=entry["effect"],
+            guidance=entry["guidance"],
+        )
 
     def parse(self, raw_model_output: str) -> MedicationPair:
         """Parse the model's structured extraction into a normalized pair.

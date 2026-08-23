@@ -34,5 +34,28 @@
       "effect": "Corticosteroids can raise blood glucose and counteract metformin's effect, worsening glycemic control.",
       "guidance": "Monitor blood glucose closely during steroid courses and inform the diabetes care team."
     }
+  },
+  "aliases": {
+    "_meta": "brand/common name -> canonical generic name. Every value must be a drug that appears in an interaction key above; aliases pointing at unknown drugs are ignored at load time.",
+    "advil": "ibuprofen",
+    "motrin": "ibuprofen",
+    "nuprin": "ibuprofen",
+    "calprofen": "ibuprofen",
+    "coumadin": "warfarin",
+    "jantoven": "warfarin",
+    "bayer": "aspirin",
+    "bufferin": "aspirin",
+    "ecotrin": "aspirin",
+    "ascriptin": "aspirin",
+    "biaxin": "clarithromycin",
+    "zocor": "simvastatin",
+    "prozac": "fluoxetine",
+    "ultram": "tramadol",
+    "prinivil": "lisinopril",
+    "zestril": "lisinopril",
+    "glucophage": "metformin",
+    "deltasone": "prednisone",
+    "klor-con": "potassium",
+    "k-dur": "potassium"
   }
 }

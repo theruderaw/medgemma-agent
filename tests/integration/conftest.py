@@ -30,13 +30,7 @@ import httpx
 import pytest
 import redis.asyncio as aioredis
 
-from tests.integration.fake_ollama import FakeOllama
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
-
-_FAKE_OLLAMA = FakeOllama()
-_FAKE_OLLAMA.start()
-os.environ["OLLAMA_BASE_URL"] = _FAKE_OLLAMA.base_url
 
 
 def _isolate_redis() -> None:
@@ -45,7 +39,9 @@ def _isolate_redis() -> None:
     Without this, a concurrently running dev worker consumes the same broker
     queue and steals/executes test jobs against freshly-truncated Postgres
     rows — producing phantom failures. Must run before any app.core.config
-    import bakes settings.
+    import bakes settings — INCLUDING the transitive one below: importing
+    tests.integration.fake_ollama pulls in app.features.* -> app.core.config,
+    so this function is defined and invoked before that import happens.
     """
     url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
     base, _, db = url.rpartition("/")
@@ -56,7 +52,15 @@ def _isolate_redis() -> None:
     os.environ["REDIS_URL"] = url
 
 
+# Ordering contract (see docstring above): isolate the broker FIRST, then
+# import anything that transitively touches app.core.config.
 _isolate_redis()
+
+from tests.integration.fake_ollama import FakeOllama
+
+_FAKE_OLLAMA = FakeOllama()
+_FAKE_OLLAMA.start()
+os.environ["OLLAMA_BASE_URL"] = _FAKE_OLLAMA.base_url
 
 SPECIALIST_JSON = json.dumps(
     {
