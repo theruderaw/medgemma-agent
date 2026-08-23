@@ -14,6 +14,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .api import (
+    AppConfigResponse,
     AuditListResponse,
     AuditRecord,
     ChatRequest,
@@ -83,6 +84,19 @@ async def health() -> dict:
     ``redis: false`` means every job stays pending.
     """
     return {"api": True, "redis": await broker_ping()}
+
+
+@app.get("/v1/config", response_model=AppConfigResponse)
+async def app_config() -> AppConfigResponse:
+    """Public client configuration: upload limits for UI pre-checks.
+
+    The backend re-validates every upload regardless; this endpoint only
+    exists so the frontend never hardcodes backend policy that can drift.
+    """
+    return AppConfigResponse(
+        image_max_bytes=settings.image_max_bytes,
+        image_allowed_mime=list(settings.image_allowed_mime),
+    )
 
 
 def _prepare_image(image_b64: str | None, image_mime: str | None) -> ProcessedImage | None:

@@ -35,7 +35,7 @@ export default function EmergencyGate({ message, onAcknowledge }: Props) {
   if (!message) return null;
 
   return (
-    <Modal tone="danger" labelledBy="urgent-title" onClose={onAcknowledge}>
+    <Modal tone="danger" labelledBy="urgent-title" dismissible={false}>
       <div className="mb-4 flex items-center gap-3">
         <span className="h-3 w-3 animate-breathe rounded-full bg-red-500" />
         <h2

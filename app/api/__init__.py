@@ -1,4 +1,5 @@
 from .schemas import (
+    AppConfigResponse,
     AuditEvent,
     AuditListResponse,
     AuditRecord,
@@ -18,6 +19,7 @@ from .schemas import (
 )
 
 __all__ = [
+    "AppConfigResponse",
     "AuditEvent",
     "AuditListResponse",
     "AuditRecord",

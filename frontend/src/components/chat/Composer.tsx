@@ -1,9 +1,13 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { AttachedImage } from '../../types';
+import { fetchConfig } from '../../lib/api';
 import { b64Bytes, formatBytes } from '../../lib/format';
 
-const MAX_BYTES = 5 * 1024 * 1024;
-const MIME_OK = ['image/jpeg', 'image/png', 'image/webp'];
+// Backend defaults (see .env.example), in force only until GET /v1/config
+// responds with the server's actual limits; a failed fetch keeps these and
+// the backend still re-validates every upload.
+const DEFAULT_MAX_BYTES = 5 * 1024 * 1024;
+const DEFAULT_MIME_OK = ['image/jpeg', 'image/png', 'image/webp'];
 
 interface Props {
   busy: boolean;
@@ -19,8 +23,26 @@ export default function Composer({ busy, onSend }: Props) {
   const [image, setImage] = useState<AttachedImage | null>(null);
   const [triage, setTriage] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [limits, setLimits] = useState({
+    maxBytes: DEFAULT_MAX_BYTES,
+    mimes: DEFAULT_MIME_OK,
+  });
   const ref = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchConfig()
+      .then((cfg) => {
+        if (!cancelled) {
+          setLimits({ maxBytes: cfg.image_max_bytes, mimes: cfg.image_allowed_mime });
+        }
+      })
+      .catch(() => {}); // pre-check is best-effort; backend re-validates
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const resize = () => {
     const el = ref.current;
@@ -32,12 +54,12 @@ export default function Composer({ busy, onSend }: Props) {
   const attach = (file: File | undefined | null) => {
     if (!file) return;
     setError(null);
-    if (!MIME_OK.includes(file.type)) {
+    if (!limits.mimes.includes(file.type)) {
       setError('Only JPEG, PNG or WebP images are supported.');
       return;
     }
-    if (file.size > MAX_BYTES) {
-      setError(`Image exceeds the ${formatBytes(MAX_BYTES)} limit.`);
+    if (file.size > limits.maxBytes) {
+      setError(`Image exceeds the ${formatBytes(limits.maxBytes)} limit.`);
       return;
     }
     const reader = new FileReader();
@@ -95,7 +117,7 @@ export default function Composer({ busy, onSend }: Props) {
           <input
             ref={fileRef}
             type="file"
-            accept="image/jpeg,image/png,image/webp"
+            accept={limits.mimes.join(',')}
             className="hidden"
             onChange={(e) => attach(e.target.files?.[0])}
           />
@@ -104,7 +126,9 @@ export default function Composer({ busy, onSend }: Props) {
             onClick={() => fileRef.current?.click()}
             disabled={busy}
             aria-label="Attach image"
-            title="Attach an image of a visual symptom (JPEG/PNG/WebP, max 5 MB)"
+            title={`Attach an image of a visual symptom (${limits.mimes
+              .map((m) => m.replace('image/', '').toUpperCase())
+              .join('/')}, max ${formatBytes(limits.maxBytes)})`}
             className="cursor-pointer rounded-lg border border-ink-700 px-2.5 py-2 text-sm text-slate-300 transition-colors hover:border-accent-500/50 hover:text-accent-300 disabled:cursor-not-allowed disabled:opacity-50"
           >
             📎

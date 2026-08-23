@@ -107,3 +107,9 @@ export interface FeatureInfo {
   enabled: boolean;
   disclaimer_level: 'standard' | 'high';
 }
+
+/** GET /v1/config — public upload limits the composer pre-checks against. */
+export interface AppConfig {
+  image_max_bytes: number;
+  image_allowed_mime: string[];
+}

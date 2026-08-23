@@ -5,7 +5,13 @@ interface Props {
   labelledBy?: string;
   /** Accent color for the close affordance. */
   tone?: 'neutral' | 'danger';
-  onClose: () => void;
+  /**
+   * Whether Escape and a backdrop click may close the dialog (default true).
+   * Safety gates pass false so closing requires an explicit in-dialog action.
+   */
+  dismissible?: boolean;
+  /** Dismissal handler; only invoked when dismissible is true. */
+  onClose?: () => void;
   children: ReactNode;
 }
 
@@ -13,14 +19,24 @@ interface Props {
  * Shared dialog chrome: fixed overlay, Escape to close, backdrop click,
  * focus-trap-lite (autofocus handled by callers via autoFocus attr).
  */
-export default function Modal({ title, labelledBy, tone = 'neutral', onClose, children }: Props) {
+export default function Modal({
+  title,
+  labelledBy,
+  tone = 'neutral',
+  dismissible = true,
+  onClose,
+  children,
+}: Props) {
   useEffect(() => {
+    if (!dismissible || !onClose) return;
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [dismissible, onClose]);
+
+  const requestClose = dismissible ? onClose : undefined;
 
   return (
     <div
@@ -29,7 +45,7 @@ export default function Modal({ title, labelledBy, tone = 'neutral', onClose, ch
       aria-modal="true"
       aria-label={title}
       aria-labelledby={labelledBy}
-      onClick={onClose}
+      onClick={requestClose}
     >
       <div
         className={`panel w-full max-w-lg p-6 shadow-2xl shadow-black/60 ${
