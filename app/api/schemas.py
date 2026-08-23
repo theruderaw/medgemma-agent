@@ -98,3 +98,46 @@ class TriageResponse(BaseModel):
             source=source,
             image=image,
         )
+
+
+class FeatureInfo(BaseModel):
+    name: str
+    description: str
+    enabled: bool
+    disclaimer_level: str
+
+
+class FeatureListResponse(BaseModel):
+    features: list[FeatureInfo]
+
+
+class FeatureToggleRequest(BaseModel):
+    enabled: bool
+
+
+class SessionMessage(BaseModel):
+    role: str  # "user" | "assistant"
+    content: str
+    # Pipeline turn that produced this message (None for legacy rows).
+    turn_id: str | None = None
+
+
+class SessionHistoryResponse(BaseModel):
+    session_id: str
+    created_at: float
+    last_activity: float
+    messages: list[SessionMessage]
+
+
+class RecentChat(BaseModel):
+    """One conversation in the most-recent-activity listing."""
+
+    session_id: str
+    created_at: float
+    last_activity: float
+    message_count: int
+    preview: str | None = None
+
+
+class RecentChatsResponse(BaseModel):
+    chats: list[RecentChat]

@@ -18,12 +18,23 @@
 
 ## Current status
 
-- **Active step:** Step 4 complete — next is Step 5 (`06-step5-feature-toggle-settings.md`, task 5.1)
-- **Last updated by:** ox-alpha session, 2026-08-22
-- **Blockers / open questions:** none. Step 3 + Step 4 changes are uncommitted
-  (user has not requested a commit). `CLEANUP_NOTES.md` deleted; its
-  still-relevant content (config-naming convention for Step 5) is preserved in
-  the Step 5 section below.
+- **Active step:** Step 5 complete (with documented deviations) — only final
+  sign-off remains, blocked on the broken integration suite
+- **Post-step-5 additions (2026-08-23):** routing fix for contextual medication
+  mentions (tool description + router prompt now prefer specific lookups);
+  frontend fully rewritten (lib/hooks/ui/chat/addons/logs/layout structure,
+  clinical dark tokens); persistent event timelines — `messages.turn_id`
+  column + migration `b91c4de2f7a3`, history endpoint returns `turn_id`,
+  restore joins `/v1/audit` by turn, timeline expansion state hoisted into the
+  conversation reducer; new `GET /v1/sessions/recent` endpoint + "Recent"
+  chat-switcher dropdown in the header.
+- **Last updated by:** ox-alpha session, 2026-08-23
+- **Blockers / open questions:** the integration suite is RED (~20 failures:
+  jobs never complete under the fake-Ollama worker; root cause not yet fixed).
+  Per user decision, test repairs are delegated elsewhere ("I'll get the
+  tests from Claude") and Step 5 was verified with a live-model smoke suite
+  (`scripts/smoke_suite.py`) instead of pytest. Steps 3–5 changes are
+  uncommitted (user has not requested a commit).
 
 ---
 
@@ -163,15 +174,48 @@ profile note is appended to it.
 ---
 
 ## Step 5 — API, DB, Frontend Toggles (`06-step5-api-db-frontend.md`)
-- [ ] 5.1 Persistence scope decided (session-scoped vs global default) and documented here
-- [ ] 5.2 Alembic migration for `feature_settings` written, `alembic upgrade head` runs clean
-- [ ] 5.3 `app/features/settings.py` created; `enabled_features(session_id=...)` respects stored state
-- [ ] 5.3a All call sites of `enabled_features(`/`tool_schemas(` updated to pass `session_id`
-- [ ] 5.4 `GET /v1/features` and `POST /v1/features/{name}` added to `app/main.py` + schemas
-- [ ] 5.5 Frontend settings panel added, matches existing `frontend/src` patterns
-- [ ] 5.5a High-`disclaimer_level` features visually distinguished in UI
-- [ ] 5.6 Tests: toggle affects router tool list; emergency floor unaffected by any toggle state
-- [ ] `pytest` green
+- [x] 5.1 Persistence scope decided (session-scoped vs global default) and documented here
+- [x] 5.2 Alembic migration for `feature_settings` written, `alembic upgrade head` runs clean
+- [x] 5.3 `app/features/settings.py` created; `enabled_features(session_id=...)` respects stored state
+- [x] 5.3a All call sites of `enabled_features(`/`tool_schemas(` updated to pass `session_id`
+- [x] 5.4 `GET /v1/features` and `POST /v1/features/{name}` added to `app/main.py` + schemas
+- [x] 5.5 Frontend settings panel added, matches existing `frontend/src` patterns
+- [x] 5.5a High-`disclaimer_level` features visually distinguished in UI
+- [ ] 5.6 Tests: toggle affects router tool list; emergency floor unaffected by any toggle state — **done as live smoke checks, not pytest** (see Notes)
+- [ ] `pytest` green — **NOT met** (see Notes)
+
+**Notes:** Scope decision (5.1): session-scoped toggles only — no user-account
+concept exists; a missing `feature_settings` row means "enabled", only
+explicit disabled rows are stored (docstring in `app/features/settings.py`).
+(5.2) Migration `aa73abbdd360_add_feature_settings.py`; runs clean on API
+startup via `_run_migrations()`. (5.4) Routes return 404 for unknown feature
+and unknown/expired session (mirrors `reset_session`); toggles are audited
+(`module="features"`, `event_type="feature_toggled"`); registry gained a
+read-only `all_features()` accessor so the list endpoint can show disabled
+entries. (5.5) New `FeaturesPanel.tsx` + `useFeatures.ts` hook under an
+"Add-ons" header tab; optimistic toggle with rollback + error banner;
+toggling disabled until a session exists. (5.5a) `disclaimer_level == "high"`
+renders a persistent amber "high stakes" badge next to the feature.
+
+Deviations from the doc: (1) **Beyond scope:** added
+`GET /v1/sessions/{session_id}/messages` (full persisted conversation,
+oldest-first) plus frontend history restore on load (`useChat` rehydrates
+from Postgres via the localStorage session id; 404 clears the stale session),
+because the user asked for chat-history-from-DB explicitly.
+(2) **Verification replaced:** per user instruction ("fuck the tests do 5
+smoke tests each type"), 5.6 was verified live instead of via pytest:
+`scripts/smoke_suite.py` runs 7 types × 5 rounds against the real stack —
+general, symptom+triage, emergency, image-attached, `/v1/triage`,
+features-toggle round-trip (asserts the disabled specialist disappears from /
+returns to the router's tool list via the `routing_decision` audit payload's
+`tools`, plus 404 on unknown feature), and history round-trip (sent message +
+assistant reply both persisted and served back). Result: every check passed
+in all rounds except 3 rounds that died on **Ollama ReadTimeouts**
+(model-server latency >120s × 3 Celery retries under sustained load — the
+app's retry/failure path behaved as designed). `pytest` remains red from the
+pre-existing harness breakage (~20 tests, jobs stuck pending); repairs
+delegated per user. Frontend typechecks/builds clean (`tsc -b && vite build`);
+ruff shows zero new findings vs baseline.
 
 **Notes:** Config-naming convention (absorbed from Step 0's
 `CLEANUP_NOTES.md` §0.6): `app/core/config.py` = plain class of class-level
@@ -186,6 +230,6 @@ config table omits `MAX_HISTORY_MESSAGES`, default 40.)
 ---
 
 ## Final sign-off (all steps complete)
-- [ ] Full `pytest` suite green
-- [ ] Manual smoke test: general chat, symptom-related chat, image-attached chat, emergency phrase — all behave correctly
+- [ ] Full `pytest` suite green — blocked: integration harness broken (~20 failures), repairs delegated per user
+- [ ] Manual smoke test: general chat, symptom-related chat, image-attached chat, emergency phrase — **done via `scripts/smoke_suite.py`** (7 types × 5 rounds; all passed except 3 Ollama-ReadTimeout rounds)
 - [ ] All step docs' "What NOT to do" sections re-checked against final diff (no violations introduced across the whole project, even ones from an earlier step that a later step's edits might have quietly undone)

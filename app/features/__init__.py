@@ -2,7 +2,7 @@ from . import registry
 from .base import Feature, SafetyProfile, ToolSchema
 from .clinical_assessment import clinical_assessment_feature
 from .medication_interaction import medication_interaction_feature
-from .registry import enabled_features, get, register, tool_schemas
+from .registry import enabled_features, feature_names, get, register, tool_schemas
 from .symptom_triage import symptom_triage_feature
 
 # Clinical assessment: the migrated Step 2 specialist (diagnostic tier).
@@ -19,6 +19,7 @@ __all__ = [
     "ToolSchema",
     "clinical_assessment_feature",
     "enabled_features",
+    "feature_names",
     "get",
     "medication_interaction_feature",
     "register",

@@ -44,8 +44,10 @@ class SessionManager:
             raise SessionExpiredError(f"Session {session_id} is unknown or expired")
         return session
 
-    async def append(self, session: Session, role: str, content: str) -> None:
-        session.messages.append({"role": role, "content": content})
+    async def append(
+        self, session: Session, role: str, content: str, *, turn_id: str | None = None
+    ) -> None:
+        session.messages.append({"role": role, "content": content, "turn_id": turn_id})
 
     def build_messages(self, session: Session) -> list[dict]:
         return trim_context(

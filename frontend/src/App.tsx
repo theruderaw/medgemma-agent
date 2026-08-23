@@ -1,37 +1,49 @@
 import { useState } from 'react';
-import ChatInput from './components/ChatInput';
-import Header, { type View } from './components/Header';
-import LogsView from './components/LogsView';
-import MessageList from './components/MessageList';
-import UrgencyModal from './components/UrgencyModal';
-import { useChat } from './hooks/useChat';
+import AddonsPanel from './components/addons/AddonsPanel';
+import ChatView from './components/chat/ChatView';
+import EmergencyGate from './components/chat/EmergencyGate';
+import Header, { type View } from './components/layout/Header';
+import Sidebar from './components/layout/Sidebar';
+import LogsPanel from './components/logs/LogsPanel';
+import { useConversation } from './hooks/useConversation';
 import { useHealth } from './hooks/useHealth';
 
 export default function App() {
-  const { state, send, newChat, acknowledge } = useChat();
+  const { state, send, newChat, acknowledge, switchSession, toggleStep } = useConversation();
   const online = useHealth();
   const [view, setView] = useState<View>('chat');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (
-    <div className="flex h-full flex-col">
-      <Header
+    <div className="flex h-full">
+      <Sidebar
         sessionId={state.sessionId}
-        online={online}
-        view={view}
-        onView={setView}
+        open={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
+        onOpenChat={(id) => void switchSession(id)}
         onNewChat={newChat}
       />
-      {view === 'chat' ? (
-        <>
-          <div className="flex flex-1 overflow-hidden">
-            <MessageList messages={state.messages} />
-          </div>
-          <ChatInput busy={state.busy} onSend={send} />
-        </>
-      ) : (
-        <LogsView sessionId={state.sessionId} />
-      )}
-      <UrgencyModal message={state.urgent} onAcknowledge={acknowledge} />
+      <div className="flex min-w-0 flex-1 flex-col">
+        <Header
+          sessionId={state.sessionId}
+          online={online}
+          view={view}
+          onView={setView}
+          onMenu={() => setSidebarOpen(true)}
+        />
+        {view === 'chat' && (
+          <ChatView
+            messages={state.messages}
+            busy={state.busy}
+            onSend={send}
+            expandedSteps={state.expandedSteps}
+            onToggleStep={toggleStep}
+          />
+        )}
+        {view === 'addons' && <AddonsPanel sessionId={state.sessionId} />}
+        {view === 'logs' && <LogsPanel sessionId={state.sessionId} />}
+      </div>
+      <EmergencyGate message={state.urgent} onAcknowledge={acknowledge} />
     </div>
   );
 }

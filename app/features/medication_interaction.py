@@ -36,6 +36,14 @@ _NO_DATA_CONTEXT = (
 )
 
 
+# Placeholder values a model may emit instead of a real drug name. Any of
+# these in either field means the extraction failed — reject loudly rather
+# than look up a nonsense pair (which would read as "no data", not "no hit").
+_PLACEHOLDERS = frozenset(
+    {"none", "unknown", "n/a", "na", "nil", "null", "not_specified", "no_medication"}
+)
+
+
 @dataclass(frozen=True)
 class MedicationPair:
     drug_a: str
@@ -67,9 +75,12 @@ class MedicationInteractionFeature:
     tool_schema = ToolSchema(
         name="check_medication_interaction",
         description=(
-            "Call when the user asks whether two or more named medications "
-            "can safely be taken together or mentions combining specific "
-            "drugs, so a curated interaction lookup can run."
+            "Call whenever the patient mentions a medication alongside another "
+            "one they take or took — even if only one drug is named in the "
+            "latest message and the other comes from earlier in the "
+            "conversation, or if they report taking/adding something new. "
+            "This runs a curated interaction lookup instead of a general "
+            "assessment."
         ),
         parameters={
             "type": "object",
@@ -89,8 +100,14 @@ class MedicationInteractionFeature:
         '{"drug_a": "<first medication>", "drug_b": "<second medication>"}\n'
         "Rules:\n"
         "- Use lowercase generic names when known.\n"
-        "- Extract only names actually present in the text; never invent or "
-        "substitute medications.\n"
+        "- Every query concerns exactly two real medications. If only one is "
+        "named in the patient text, take the other from the surrounding "
+        "conversation summary (e.g. a drug the patient said they already "
+        "take).\n"
+        "- NEVER write \"none\", \"unknown\", \"n/a\" or any other "
+        "placeholder: both fields must be real medication names.\n"
+        "- Extract only medications actually present in the text or "
+        "conversation; never invent or substitute medications.\n"
         "- Do not assess, explain, or judge any interaction yourself."
     )
     safety_profile = SafetyProfile(
@@ -111,6 +128,11 @@ class MedicationInteractionFeature:
         drug_b = str(data.get("drug_b") or "").strip().lower()
         if not drug_a or not drug_b:
             raise ValueError("Medication query output missing a drug name")
+        if drug_a in _PLACEHOLDERS or drug_b in _PLACEHOLDERS:
+            raise ValueError(
+                f"Medication query output contains a placeholder name: "
+                f"'{drug_a}', '{drug_b}'"
+            )
         return MedicationPair(drug_a=drug_a, drug_b=drug_b)
 
     def context_for(self, result: MedicationPair, **kwargs) -> str | None:

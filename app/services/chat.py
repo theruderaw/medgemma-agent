@@ -64,11 +64,11 @@ async def run_emergency_turn(
 
     async with await sessions.lock(resolved_id):
         session = await sessions.load_or_create(resolved_id, must_exist=provided_session_id)
-        await sessions.append(session, "user", message)
+        await sessions.append(session, "user", message, turn_id=turn_id)
 
         category = detect_emergency(message)
         response_text = EMERGENCY_RESPONSE.format(category=category)
-        await sessions.append(session, "assistant", response_text)
+        await sessions.append(session, "assistant", response_text, turn_id=turn_id)
         await sessions.save(session)
 
         event = {
@@ -167,7 +167,7 @@ async def run_chat_turn(
         if image is not None:
             image_path = persist_image(image, turn_id)
             stored_message = f"{message}\n\n[image attached: {image_path}]"
-        await sessions.append(session, "user", stored_message)
+        await sessions.append(session, "user", stored_message, turn_id=turn_id)
         if image is not None:
             await record(
                 "image",
@@ -185,7 +185,7 @@ async def run_chat_turn(
         emergency = detect_emergency(message)
         if emergency is not None:
             response_text = EMERGENCY_RESPONSE.format(category=emergency)
-            await sessions.append(session, "assistant", response_text)
+            await sessions.append(session, "assistant", response_text, turn_id=turn_id)
             await sessions.save(session)
             await record(
                 "safety",
@@ -238,9 +238,10 @@ async def run_chat_turn(
         routing_messages += history
 
         started = time.monotonic()
+        offered = await feature_registry.enabled_features(session_id=resolved_id)
         routing = await llm.chat_with_tools(
             routing_messages,
-            tools=feature_registry.tool_schemas(),
+            tools=[f.tool_schema.as_dict() for f in offered],
             temperature=temperature,
             model=settings.model_name,
         )
@@ -260,6 +261,7 @@ async def run_chat_turn(
                 "reason": decision.reason,
                 "raw_content": routing.content,
                 "tool_calls": routing.tool_calls,
+                "tools": feature_registry.feature_names(offered),
                 "image_override": image_override,
                 "duration_ms": routing_ms,
             },
@@ -411,7 +413,7 @@ async def run_chat_turn(
                 else:
                     await on_token(f"\n\n{guarded.text}")
             text = guarded.text
-        await sessions.append(session, "assistant", text)
+        await sessions.append(session, "assistant", text, turn_id=turn_id)
         await sessions.save(session)
         await record(
             "chat",
