@@ -1,10 +1,21 @@
+// ---------------------------------------------------------------------------
+// Transport layer — one function per backend endpoint. All UI data flow goes
+// through here; components never call fetch directly.
+//
+// Chat turns are ALWAYS enqueued (Celery) except the deterministic emergency
+// floor, which answers synchronously with 200. Job progress arrives over SSE
+// (GET /v1/jobs/{id}/events) with polling as the resilience fallback.
+
 import type {
   AttachedImage,
   AuditEvent,
   AuditRecord,
   ChatResponse,
+  FeatureInfo,
   JobResponse,
   QueuedChatResponse,
+  RecentChat,
+  SessionHistory,
   TriageApiResponse,
 } from '../types';
 
@@ -32,19 +43,12 @@ function imageFields(image?: AttachedImage) {
 }
 
 // ---------------------------------------------------------------------------
-// Chat turns: always enqueued (Celery); the emergency floor answers 200 sync.
+// POST /v1/chat — enqueue a turn (200 = sync emergency response).
 
 export type EnqueueResult =
   | { kind: 'sync'; data: ChatResponse }
   | { kind: 'queued'; data: QueuedChatResponse };
 
-/**
- * POST /v1/chat?triage=… — enqueue one turn.
- *
- * `202` → `{ kind: 'queued' }`; watch the job via `watchJob` (or poll).
- * `200` → `{ kind: 'sync' }`: the deterministic emergency floor matched and
- * answered without the queue. Throws ApiError for 410/422/503.
- */
 export async function enqueueTurn(
   message: string,
   sessionId: string | null,
@@ -63,7 +67,7 @@ export async function enqueueTurn(
 }
 
 // ---------------------------------------------------------------------------
-// Job watching: SSE first (with Last-Event-ID replay), polling as fallback.
+// GET /v1/jobs/{id}/events — SSE with Last-Event-ID replay.
 
 export interface JobStreamHandlers {
   onPipeline?: (event: AuditEvent) => void;
@@ -83,7 +87,7 @@ export interface JobStreamHandlers {
 const MAX_SSE_FAILURES = 3;
 
 /**
- * GET /v1/jobs/{id}/events over a native EventSource.
+ * Watch one job over a native EventSource.
  *
  * The backend emits named SSE frames (`pipeline`, `specialist_token`, `token`,
  * `result`, `error`) with `id:` lines, so browser auto-reconnect replays
@@ -93,6 +97,7 @@ export function watchJob(jobId: string, handlers: JobStreamHandlers): () => void
   const es = new EventSource(`/v1/jobs/${encodeURIComponent(jobId)}/events`);
   let closed = false;
   let failures = 0;
+
   const parse = (e: MessageEvent): unknown | null => {
     try {
       return JSON.parse(e.data as string);
@@ -148,9 +153,7 @@ export function watchJob(jobId: string, handlers: JobStreamHandlers): () => void
     if (typeof me.data === 'string' && me.data) {
       const p = parse(me) as { error?: unknown } | null;
       close();
-      handlers.onError(
-        typeof p?.error === 'string' && p.error ? p.error : 'Turn failed.',
-      );
+      handlers.onError(typeof p?.error === 'string' && p.error ? p.error : 'Turn failed.');
       return;
     }
     if (es.readyState === EventSource.CLOSED) {
@@ -193,9 +196,6 @@ export async function pollUntilDone(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Other endpoints
-
 export async function pollJob(jobId: string): Promise<JobResponse> {
   const res = await fetch(`/v1/jobs/${encodeURIComponent(jobId)}`);
   if (!res.ok) {
@@ -203,6 +203,19 @@ export async function pollJob(jobId: string): Promise<JobResponse> {
     throw new ApiError(res.status, data.detail ?? `Job lookup failed (${res.status})`);
   }
   return (await res.json()) as JobResponse;
+}
+
+// ---------------------------------------------------------------------------
+// Other endpoints.
+
+/** GET /health — API up + Redis broker reachable. */
+export async function health(): Promise<boolean> {
+  try {
+    const res = await fetch('/health');
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -219,17 +232,9 @@ export async function triageCheck(message: string, image?: AttachedImage): Promi
   return json<TriageApiResponse>(res);
 }
 
+/** DELETE /v1/sessions/{id} — drop the conversation server-side. */
 export async function resetSession(sessionId: string): Promise<void> {
   await fetch(`/v1/sessions/${encodeURIComponent(sessionId)}`, { method: 'DELETE' });
-}
-
-export async function health(): Promise<boolean> {
-  try {
-    const res = await fetch('/health');
-    return res.ok;
-  } catch {
-    return false;
-  }
 }
 
 /** GET /v1/audit — newest-first audit trail, optionally scoped to a session id. */
@@ -243,4 +248,48 @@ export async function fetchAuditEvents(
   const res = await fetch(`/v1/audit${qs ? `?${qs}` : ''}`);
   const data = await json<{ events: AuditRecord[] }>(res);
   return data.events;
+}
+
+// ---------------------------------------------------------------------------
+// Feature add-ons: per-session toggles backed by feature_settings.
+
+/** GET /v1/features — registered add-ons; `sessionId` scopes the enabled flags. */
+export async function fetchFeatures(sessionId: string | null): Promise<FeatureInfo[]> {
+  const qs = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
+  const res = await fetch(`/v1/features${qs}`);
+  const data = await json<{ features: FeatureInfo[] }>(res);
+  return data.features;
+}
+
+/**
+ * POST /v1/features/{name} — toggle one add-on for the session.
+ * Throws ApiError (404 unknown feature/session); callers roll back optimistically.
+ */
+export async function toggleFeature(
+  name: string,
+  enabled: boolean,
+  sessionId: string,
+): Promise<FeatureInfo> {
+  const res = await fetch(
+    `/v1/features/${encodeURIComponent(name)}?session_id=${encodeURIComponent(sessionId)}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled }),
+    },
+  );
+  return json<FeatureInfo>(res);
+}
+
+/** GET /v1/sessions/{id}/messages — persisted conversation, oldest first. */
+export async function fetchSessionHistory(sessionId: string): Promise<SessionHistory> {
+  const res = await fetch(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`);
+  return json<SessionHistory>(res);
+}
+
+/** GET /v1/sessions/recent — most recently active conversations, newest first. */
+export async function fetchRecentChats(limit = 20): Promise<RecentChat[]> {
+  const res = await fetch(`/v1/sessions/recent?limit=${limit}`);
+  const data = await json<{ chats: RecentChat[] }>(res);
+  return data.chats;
 }

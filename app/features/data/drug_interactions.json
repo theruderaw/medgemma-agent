@@ -1,0 +1,61 @@
+{
+  "_meta": {
+    "purpose": "Curated drug-interaction lookup for the medication_interaction feature. The dataset originates every interaction claim; the LLM only phrases explanations. Demo-curated, textbook-level subset — verify against a real drug knowledge base before any production use.",
+    "schema": {"<sorted pair 'drug_a+drug_b'>": {"severity": "major|moderate", "effect": "what the combination may cause", "guidance": "what the user should do"}}
+  },
+  "interactions": {
+    "ibuprofen+warfarin": {
+      "severity": "major",
+      "effect": "NSAIDs like ibuprofen can increase the anticoagulant effect of warfarin and irritate the stomach lining, raising the risk of serious bleeding.",
+      "guidance": "Do not take ibuprofen while on warfarin without explicit direction from the prescribing clinician; prefer a pharmacist-approved alternative for pain."
+    },
+    "aspirin+warfarin": {
+      "severity": "major",
+      "effect": "Combining two antithrombotic agents substantially increases the risk of bleeding, including gastrointestinal and intracranial bleeding.",
+      "guidance": "Only use together under close medical supervision with INR monitoring."
+    },
+    "clarithromycin+simvastatin": {
+      "severity": "major",
+      "effect": "Clarithromycin inhibits CYP3A4, sharply raising simvastatin levels and increasing the risk of muscle damage (myopathy, rhabdomyolysis).",
+      "guidance": "Ask the prescriber to pause simvastatin or switch antibiotics/statin for the course of treatment."
+    },
+    "lisinopril+potassium": {
+      "severity": "moderate",
+      "effect": "ACE inhibitors reduce potassium excretion; supplements or salt substitutes high in potassium can push levels dangerously high (hyperkalemia).",
+      "guidance": "Avoid potassium supplements and salt substitutes unless blood levels are being monitored."
+    },
+    "fluoxetine+tramadol": {
+      "severity": "major",
+      "effect": "Both raise serotonergic tone; combined use can cause serotonin syndrome (agitation, tremor, fever, rapid heart rate) and lowers the seizure threshold.",
+      "guidance": "Seek immediate medical advice if agitation, tremor, sweating, or fever occur; tell every prescriber you take both."
+    },
+    "metformin+prednisone": {
+      "severity": "moderate",
+      "effect": "Corticosteroids can raise blood glucose and counteract metformin's effect, worsening glycemic control.",
+      "guidance": "Monitor blood glucose closely during steroid courses and inform the diabetes care team."
+    }
+  },
+  "aliases": {
+    "_meta": "brand/common name -> canonical generic name. Every value must be a drug that appears in an interaction key above; aliases pointing at unknown drugs are ignored at load time.",
+    "advil": "ibuprofen",
+    "motrin": "ibuprofen",
+    "nuprin": "ibuprofen",
+    "calprofen": "ibuprofen",
+    "coumadin": "warfarin",
+    "jantoven": "warfarin",
+    "bayer": "aspirin",
+    "bufferin": "aspirin",
+    "ecotrin": "aspirin",
+    "ascriptin": "aspirin",
+    "biaxin": "clarithromycin",
+    "zocor": "simvastatin",
+    "prozac": "fluoxetine",
+    "ultram": "tramadol",
+    "prinivil": "lisinopril",
+    "zestril": "lisinopril",
+    "glucophage": "metformin",
+    "deltasone": "prednisone",
+    "klor-con": "potassium",
+    "k-dur": "potassium"
+  }
+}

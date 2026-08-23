@@ -1,6 +1,7 @@
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from typing import Any
 from uuid import uuid4
 
 import structlog
@@ -10,6 +11,7 @@ from ..core.config import settings
 from ..core.images import ProcessedImage, persist_image
 from ..core.logging import get_logger
 from ..features import registry as feature_registry
+from ..features.base import DEFAULT_UNAVAILABLE_REPLY
 from ..llm import StreamExtractor, extract_answer, llm
 from ..prompts import (
     ROUTING_SYSTEM_PROMPT,
@@ -17,9 +19,13 @@ from ..prompts import (
     triage_context_for,
 )
 from ..routes import RouteCategory, RouteDecision, parse_tool_calls
-from ..safety import EMERGENCY_RESPONSE, detect_emergency, enforce_safety_invariants, run_output_guard
+from ..safety import (
+    EMERGENCY_RESPONSE,
+    detect_emergency,
+    enforce_safety_invariants,
+    run_output_guard,
+)
 from ..sessions import sessions
-from ..specialist import SpecialistResult
 from ..triage import Urgency
 from .triage import run_triage
 
@@ -29,6 +35,9 @@ logger = get_logger("app.services.chat")
 PATH_EMERGENCY_OVERRIDE = "emergency_override"
 PATH_MEDICAL_SPECIALIST = "medical_specialist"
 PATH_QWEN_DIRECT = "qwen_direct"
+# A routed feature raised mid-turn: the turn completes with the feature's
+# explicit unavailable reply instead of failing (fault isolation boundary).
+PATH_FEATURE_UNAVAILABLE = "feature_unavailable"
 
 
 @dataclass
@@ -63,11 +72,11 @@ async def run_emergency_turn(
 
     async with await sessions.lock(resolved_id):
         session = await sessions.load_or_create(resolved_id, must_exist=provided_session_id)
-        await sessions.append(session, "user", message)
+        await sessions.append(session, "user", message, turn_id=turn_id)
 
         category = detect_emergency(message)
         response_text = EMERGENCY_RESPONSE.format(category=category)
-        await sessions.append(session, "assistant", response_text)
+        await sessions.append(session, "assistant", response_text, turn_id=turn_id)
         await sessions.save(session)
 
         event = {
@@ -166,7 +175,7 @@ async def run_chat_turn(
         if image is not None:
             image_path = persist_image(image, turn_id)
             stored_message = f"{message}\n\n[image attached: {image_path}]"
-        await sessions.append(session, "user", stored_message)
+        await sessions.append(session, "user", stored_message, turn_id=turn_id)
         if image is not None:
             await record(
                 "image",
@@ -184,7 +193,7 @@ async def run_chat_turn(
         emergency = detect_emergency(message)
         if emergency is not None:
             response_text = EMERGENCY_RESPONSE.format(category=emergency)
-            await sessions.append(session, "assistant", response_text)
+            await sessions.append(session, "assistant", response_text, turn_id=turn_id)
             await sessions.save(session)
             await record(
                 "safety",
@@ -237,20 +246,37 @@ async def run_chat_turn(
         routing_messages += history
 
         started = time.monotonic()
+        offered = await feature_registry.enabled_features(session_id=resolved_id)
         routing = await llm.chat_with_tools(
             routing_messages,
-            tools=feature_registry.tool_schemas(),
+            tools=[f.tool_schema.as_dict() for f in offered],
             temperature=temperature,
             model=settings.model_name,
         )
         routing_ms = int((time.monotonic() - started) * 1000)
         decision = parse_tool_calls(routing.tool_calls)
         image_override = False
+        keyword_override = False
         if image is not None and decision.category is not RouteCategory.SYMPTOM_RELATED:
             # An attached image is clinical evidence: it must never be dropped
             # because the text router did not request the specialist.
             decision = RouteDecision(RouteCategory.SYMPTOM_RELATED, "image attached")
             image_override = True
+        if decision.category is RouteCategory.GENERAL:
+            # Deterministic keyword triggers: a feature may claim the turn when
+            # its conservative pattern fires (e.g. two known drug names). Only
+            # ever upgrades a GENERAL decision; never overrides the router or
+            # the image override.
+            for candidate in offered:
+                trigger = getattr(candidate, "route_trigger", None)
+                if callable(trigger) and trigger(message, history):
+                    decision = RouteDecision(
+                        RouteCategory.SYMPTOM_RELATED,
+                        "keyword trigger",
+                        feature_name=candidate.name,
+                    )
+                    keyword_override = True
+                    break
         await record(
             "router",
             "routing_decision",
@@ -259,77 +285,159 @@ async def run_chat_turn(
                 "reason": decision.reason,
                 "raw_content": routing.content,
                 "tool_calls": routing.tool_calls,
+                "tools": feature_registry.feature_names(offered),
                 "image_override": image_override,
+                "keyword_override": keyword_override,
                 "duration_ms": routing_ms,
             },
         )
 
-        specialist: SpecialistResult | None = None
+        specialist: Any = None
+        feature = None
+        # Resolution failure (router named / override defaulted to a feature
+        # that is not registered) degrades exactly like a runtime fault —
+        # never an exception escaping the turn.
+        unknown_feature: str | None = None
         if decision.category is RouteCategory.SYMPTOM_RELATED:
             feature = feature_registry.get(decision.feature_name)
             if feature is None:
-                raise ValueError(f"unknown feature '{decision.feature_name}'")
+                unknown_feature = decision.feature_name
             reason = decision.reason or message
-            specialist_messages = [
-                {"role": "system", "content": feature.system_prompt},
-                {"role": "user", "content": reason},
-            ]
-            # The specialist always returns a complete structured result
-            # (format-constrained JSON) — uncertainty survives as data, not
-            # prose that a downstream model may reinterpret. The JSON streams
-            # in live: each delta is forwarded as it is generated.
-            started = time.monotonic()
-            specialist_parts: list[str] = []
-            async for delta in llm.specialist_stream(
-                specialist_messages,
-                images=[image.b64] if image is not None else None,
-                model=settings.specialist_model_name,
-            ):
-                specialist_parts.append(delta)
-                if on_specialist_token is not None:
-                    await on_specialist_token(delta)
-            raw_specialist = "".join(specialist_parts)
-            specialist = feature.parse(raw_specialist)
-            specialist_ms = int((time.monotonic() - started) * 1000)
-            await record(
-                "specialist",
-                "specialist_output",
-                {
-                    "reason": reason,
-                    "result": specialist.to_dict(),
-                    "model": settings.specialist_model_name,
-                    "with_image": image is not None,
-                    "duration_ms": specialist_ms,
-                },
-            )
-            specialist_context = feature.context_for(specialist, image_analyzed=image is not None)
 
-            messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-            if triage_context:
-                messages.append({"role": "system", "content": triage_context})
-            if specialist_context:
-                messages.append({"role": "system", "content": specialist_context})
-            messages += history
+            # Fault-isolation boundary: extraction, parse, and context
+            # construction all happen inside this try. A broken feature must
+            # degrade into an explicit unavailable reply, never fail the turn.
+            feature_failed: str | None = (
+                f"unknown feature '{unknown_feature}'" if unknown_feature is not None else None
+            )
+            extraction_mode = "llm"
+            raw_specialist = ""
+            stream_model = settings.model_name
+            specialist_result_payload: dict = {}
+            specialist_context: str | None = None
             started = time.monotonic()
-            if on_token is not None:
-                cleaner = StreamExtractor()
-                parts: list[str] = []
-                async for delta in llm.chat_stream(
-                    messages, temperature=temperature, model=settings.model_name
-                ):
-                    chunk = cleaner.feed(delta)
-                    if chunk:
-                        parts.append(chunk)
-                        await on_token(chunk)
-                tail = cleaner.finish()
-                if tail:
-                    parts.append(tail)
-                    await on_token(tail)
-                text = "".join(parts)
+            if unknown_feature is None:
+                try:
+                    # Deterministic fast-path: a feature may extract its result
+                    # from text+history without any model call. Returning None
+                    # falls through to the streamed LLM stage below.
+                    deterministic_extract = getattr(feature, "deterministic_extract", None)
+                    if callable(deterministic_extract):
+                        specialist = deterministic_extract(message, history)
+                        if specialist is not None:
+                            extraction_mode = "deterministic"
+                    stream_model = getattr(settings, feature.model_setting)
+                    if specialist is None:
+                        specialist_messages = [
+                            {"role": "system", "content": feature.system_prompt},
+                            {"role": "user", "content": reason},
+                        ]
+                        # The selected feature always returns a complete structured
+                        # result (format-constrained JSON) — uncertainty survives as
+                        # data, not prose that a downstream model may reinterpret.
+                        # The JSON streams in live: each delta is forwarded as it is
+                        # generated.
+                        specialist_parts: list[str] = []
+                        async for delta in llm.specialist_stream(
+                            specialist_messages,
+                            images=[image.b64] if image is not None else None,
+                            model=stream_model,
+                            output_format=feature.format_schema,
+                        ):
+                            specialist_parts.append(delta)
+                            if on_specialist_token is not None:
+                                await on_specialist_token(delta)
+                        raw_specialist = "".join(specialist_parts)
+                        specialist = feature.parse(raw_specialist)
+                    specialist_result_payload = (
+                        specialist.to_dict()
+                        if hasattr(specialist, "to_dict")
+                        else {"result": str(specialist)}
+                    )
+                    specialist_context = feature.context_for(
+                        specialist, image_analyzed=image is not None
+                    )
+                except Exception as exc:  # noqa: BLE001 - feature faults never kill the turn
+                    feature_failed = f"{type(exc).__name__}: {exc}"
+            specialist_ms = int((time.monotonic() - started) * 1000)
+
+            if feature_failed is not None:
+                await record(
+                    "feature",
+                    "feature_failed",
+                    {
+                        "feature": decision.feature_name,
+                        "error": feature_failed,
+                        "reason": reason,
+                        "duration_ms": specialist_ms,
+                    },
+                )
+                logger.warning(
+                    "feature.failed",
+                    feature=decision.feature_name,
+                    error=feature_failed,
+                )
+                text = getattr(feature, "unavailable_reply", DEFAULT_UNAVAILABLE_REPLY)
+                synthesis_ms = 0
+                turn_path = PATH_FEATURE_UNAVAILABLE
+                if on_token is not None:
+                    for i in range(0, len(text), 3):
+                        await on_token(text[i : i + 3])
             else:
-                text = await llm.chat(messages, temperature=temperature, model=settings.model_name)
-            synthesis_ms = int((time.monotonic() - started) * 1000)
-            turn_path = PATH_MEDICAL_SPECIALIST
+                await record(
+                    "specialist",
+                    "specialist_output",
+                    {
+                        "reason": reason,
+                        "result": specialist_result_payload,
+                        "model": stream_model,
+                        "mode": extraction_mode,
+                        "with_image": image is not None,
+                        "duration_ms": specialist_ms,
+                    },
+                )
+
+                # Deterministic reply hook: the feature may own the final
+                # wording outright (dataset-backed claims), skipping the
+                # synthesis LLM while keeping every safety layer downstream.
+                reply_override: str | None = None
+                deterministic_reply = getattr(feature, "deterministic_reply", None)
+                if callable(deterministic_reply):
+                    candidate = deterministic_reply(specialist)
+                    if isinstance(candidate, str):
+                        reply_override = candidate
+
+                messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+                if triage_context:
+                    messages.append({"role": "system", "content": triage_context})
+                if specialist_context:
+                    messages.append({"role": "system", "content": specialist_context})
+                messages += history
+                started = time.monotonic()
+                if reply_override is not None:
+                    text = reply_override
+                    if on_token is not None:
+                        for i in range(0, len(text), 3):
+                            await on_token(text[i : i + 3])
+                elif on_token is not None:
+                    cleaner = StreamExtractor()
+                    parts: list[str] = []
+                    async for delta in llm.chat_stream(
+                        messages, temperature=temperature, model=settings.model_name
+                    ):
+                        chunk = cleaner.feed(delta)
+                        if chunk:
+                            parts.append(chunk)
+                            await on_token(chunk)
+                    tail = cleaner.finish()
+                    if tail:
+                        parts.append(tail)
+                        await on_token(tail)
+                    text = "".join(parts)
+                else:
+                    text = await llm.chat(messages, temperature=temperature, model=settings.model_name)
+                synthesis_ms = int((time.monotonic() - started) * 1000)
+                turn_path = PATH_MEDICAL_SPECIALIST
         else:
             text = extract_answer(routing.content)
             synthesis_ms = 0
@@ -344,11 +452,18 @@ async def run_chat_turn(
         # always on regardless of OUTPUT_GUARDRAILS. The emergency floor here
         # makes an emergency triage impossible to downgrade.
         limitations = list(triage_result.limitations) if triage_result else []
-        specialist_uncertain = specialist.uncertain if specialist else False
+        # Not every feature result carries uncertainty/body-part signals;
+        # absent signals degrade to False (never to an invented claim).
+        specialist_uncertain = (
+            bool(specialist.uncertain) if specialist and hasattr(specialist, "uncertain") else False
+        )
         if specialist:
-            limitations += [item for item in specialist.limitations if item not in limitations]
+            extra_limitations = getattr(specialist, "limitations", None) or []
+            limitations += [item for item in extra_limitations if item not in limitations]
         body_part_unknown = (
-            image is not None and specialist is not None and specialist.body_part_unknown
+            image is not None
+            and specialist is not None
+            and bool(getattr(specialist, "body_part_unknown", False))
         )
         enforced = enforce_safety_invariants(
             text,
@@ -358,6 +473,7 @@ async def run_chat_turn(
             limitations=limitations,
             body_part_unknown=body_part_unknown,
             image_analyzed=image is not None,
+            safety_profile=getattr(feature, "safety_profile", None),
         )
         safety_blocked = bool(enforced.violations)
         if safety_blocked:
@@ -375,7 +491,12 @@ async def run_chat_turn(
 
         # Output guardrails are always on: every reply is judged before it is
         # stored or returned.
-        guarded = await run_output_guard(text, urgency=turn_urgency, message=message)
+        guarded = await run_output_guard(
+            text,
+            urgency=turn_urgency,
+            message=message,
+            safety_profile=getattr(feature, "safety_profile", None),
+        )
         if guarded.violations:
             safety_blocked = True
             await record(
@@ -394,7 +515,7 @@ async def run_chat_turn(
                 else:
                     await on_token(f"\n\n{guarded.text}")
             text = guarded.text
-        await sessions.append(session, "assistant", text)
+        await sessions.append(session, "assistant", text, turn_id=turn_id)
         await sessions.save(session)
         await record(
             "chat",

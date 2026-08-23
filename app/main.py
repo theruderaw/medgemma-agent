@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from uuid import uuid4
 
 import httpx
@@ -17,9 +18,15 @@ from .api import (
     AuditRecord,
     ChatRequest,
     ChatResponse,
+    FeatureInfo,
+    FeatureListResponse,
+    FeatureToggleRequest,
     ImageMeta,
     JobResponse,
     QueuedChatResponse,
+    RecentChat,
+    RecentChatsResponse,
+    SessionHistoryResponse,
     TriageRequest,
     TriageResponse,
 )
@@ -27,6 +34,8 @@ from .audit import audit, trim_llm_payload
 from .core.config import settings
 from .core.images import ImageValidationError, ProcessedImage, decode_and_sanitize, persist_image
 from .core.logging import get_logger, setup_logging
+from .features import registry as feature_registry
+from .features.settings import get_disabled_feature_names, set_feature_enabled
 from .jobs import broker_ping
 from .jobs import exists as job_exists
 from .jobs import mark_enqueued
@@ -370,6 +379,146 @@ async def _stream_job_events(job_id: str, *, start: int = 0):
     except asyncio.CancelledError:
         logger.info("job.stream.closed", job_id=job_id)
         raise
+
+
+@app.get("/v1/features", response_model=FeatureListResponse)
+async def list_features(session_id: str | None = None) -> FeatureListResponse:
+    """All registered add-on features with their per-session toggle state.
+
+    ``enabled`` reflects the session's stored overrides (a missing row means
+    enabled); without ``session_id`` every feature reports its default state.
+    """
+    features = feature_registry.all_features()
+    disabled = await get_disabled_feature_names(session_id) if session_id else set()
+    return FeatureListResponse(
+        features=[
+            FeatureInfo(
+                name=f.name,
+                description=f.tool_schema.description,
+                enabled=f.name not in disabled,
+                disclaimer_level=f.safety_profile.disclaimer_level,
+            )
+            for f in features
+        ]
+    )
+
+
+@app.post("/v1/features/{name}", response_model=FeatureInfo)
+async def toggle_feature(name: str, body: FeatureToggleRequest, session_id: str) -> FeatureInfo:
+    """Enable or disable one add-on feature for this session.
+
+    Toggles are session-scoped; the emergency floor is not a feature and can
+    never be toggled. Returns 404 for an unknown feature or session.
+    """
+    feature = feature_registry.get(name)
+    if feature is None:
+        raise HTTPException(status_code=404, detail="Unknown feature")
+    try:
+        await sessions.load_or_create(session_id, must_exist=True)
+    except SessionExpiredError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    await set_feature_enabled(session_id, name, body.enabled)
+    await audit.append(
+        module="features",
+        event_type="feature_toggled",
+        payload={"feature": name, "enabled": body.enabled},
+        session_id=session_id,
+    )
+    logger.info("features.toggled", feature=name, enabled=body.enabled, session_id=session_id)
+    return FeatureInfo(
+        name=name,
+        description=feature.tool_schema.description,
+        enabled=body.enabled,
+        disclaimer_level=feature.safety_profile.disclaimer_level,
+    )
+
+
+@app.get("/v1/sessions/recent", response_model=RecentChatsResponse)
+async def recent_sessions(limit: int = 20) -> RecentChatsResponse:
+    """Most recently active conversations, newest first.
+
+    Backs the frontend's recent-chats switcher: each entry carries the last
+    assistant message as a preview so conversations are recognizable. Sessions
+    past the store's expiry timeout are excluded, mirroring what a direct
+    session read would return.
+    """
+    if not 1 <= limit <= 100:
+        raise HTTPException(status_code=422, detail="limit must be between 1 and 100")
+
+    from sqlalchemy import select
+
+    from .core.db import SessionLocal
+    from .core.models import MessageRow, SessionRow
+
+    cutoff = time.time() - settings.session_timeout_seconds
+    async with SessionLocal() as db:
+        session_rows = (
+            await db.execute(
+                select(SessionRow)
+                .where(SessionRow.last_activity >= cutoff)
+                .order_by(SessionRow.last_activity.desc())
+                .limit(limit)
+            )
+        ).scalars().all()
+        if not session_rows:
+            return RecentChatsResponse(chats=[])
+        ids = [s.session_id for s in session_rows]
+        message_rows = (
+            await db.execute(
+                select(MessageRow)
+                .where(MessageRow.session_id.in_(ids))
+                .order_by(MessageRow.session_id, MessageRow.seq)
+            )
+        ).scalars().all()
+
+    by_session: dict[str, list[MessageRow]] = {}
+    for row in message_rows:
+        by_session.setdefault(row.session_id, []).append(row)
+
+    chats = []
+    for s in session_rows:
+        msgs = by_session.get(s.session_id, [])
+        latest = next((m for m in reversed(msgs) if m.role == "assistant"), None)
+        preview = None
+        if latest is not None:
+            text = " ".join(latest.content.split())
+            preview = text[:140] + ("…" if len(text) > 140 else "")
+        chats.append(
+            RecentChat(
+                session_id=s.session_id,
+                created_at=s.created_at,
+                last_activity=s.last_activity,
+                message_count=len(msgs),
+                preview=preview,
+            )
+        )
+    return RecentChatsResponse(chats=chats)
+
+
+@app.get("/v1/sessions/{session_id}/messages", response_model=SessionHistoryResponse)
+async def session_history(session_id: str) -> SessionHistoryResponse:
+    """Full persisted conversation for a session, oldest first.
+
+    Backs the frontend's chat-history restore (e.g. after a page refresh).
+    Messages are the append-only rows already stored for model context —
+    no trimming is applied here. Each row carries the ``turn_id`` of the
+    pipeline turn that produced it so the UI can re-join audit timelines.
+    """
+    try:
+        session = await sessions.load_or_create(session_id, must_exist=True)
+    except SessionExpiredError:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return SessionHistoryResponse(
+        session_id=session.session_id,
+        created_at=session.created_at,
+        last_activity=session.last_activity,
+        messages=[
+            {"role": m["role"], "content": m["content"], "turn_id": m.get("turn_id")}
+            for m in session.messages
+            if m.get("role") in ("user", "assistant")
+        ],
+    )
 
 
 @app.delete("/v1/sessions/{session_id}", status_code=204)

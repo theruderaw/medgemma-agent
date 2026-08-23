@@ -42,7 +42,10 @@ class PostgresSessionStore(SessionStore):
 
             session = Session(
                 session_id=session_id,
-                messages=[{"role": r.role, "content": r.content} for r in message_rows],
+                messages=[
+                    {"role": r.role, "content": r.content, "turn_id": r.turn_id}
+                    for r in message_rows
+                ],
                 created_at=row.created_at,
                 last_activity=row.last_activity,
             )
@@ -74,6 +77,7 @@ class PostgresSessionStore(SessionStore):
                         role=message["role"],
                         content=message["content"],
                         created_at=now,
+                        turn_id=message.get("turn_id"),
                     )
                     .on_conflict_do_nothing(index_elements=[MessageRow.session_id, MessageRow.seq])
                 )

@@ -11,6 +11,16 @@ class SafetyProfile:
     disclaimer_level: str = "standard"  # "standard" | "high"
 
 
+# Reply used when a routed feature fails mid-turn and defines no specific
+# ``unavailable_reply`` of its own. Worded conservatively so it survives the
+# safety invariant/guard layers unchanged.
+DEFAULT_UNAVAILABLE_REPLY = (
+    "This check is temporarily unavailable, so I can't assess this right "
+    "now. Please consult a pharmacist or clinician before combining or "
+    "changing any medications."
+)
+
+
 @dataclass(frozen=True)
 class ToolSchema:
     """OpenAI-style function-calling tool definition for the router."""
@@ -43,6 +53,12 @@ class Feature(Protocol):
     tool_schema: ToolSchema
     system_prompt: str
     safety_profile: SafetyProfile
+    # Settings attribute name holding the model that runs this feature's
+    # streamed stage (resolved by the dispatcher via getattr(settings, ...)).
+    model_setting: str
+    # Format-constrained JSON schema for the streamed stage. The constraint
+    # rides on the model call so parse() always receives the expected shape.
+    format_schema: dict[str, Any]
 
     def parse(self, raw_model_output: str) -> Any:
         """Parse raw model output into this feature's structured result type."""
@@ -52,3 +68,25 @@ class Feature(Protocol):
         """Build the system-prompt context string injected before final
         synthesis, mirroring specialist_context_for's signature/shape."""
         ...
+
+
+# Optional capability hooks — all of the following are OPTIONAL members a
+# feature may define. The dispatcher probes them via getattr() and falls back
+# to the standard LLM pipeline when absent, so existing features need none of
+# them:
+#
+# deterministic_extract(text: str, history: list[dict]) -> Any | None
+#     Deterministic fast-path for the extraction stage. When it returns a
+#     result, the streamed specialist LLM call is skipped entirely; returning
+#     None falls through to the LLM stage.
+# deterministic_reply(result: Any) -> str | None
+#     Deterministic final wording for the feature's result (e.g. templated
+#     dataset-backed claims). A returned string replaces LLM synthesis; safety
+#     invariants and output guardrails still run over it.
+# route_trigger(text: str, history: list[dict]) -> bool
+#     Conservative deterministic routing claim. Only ever consulted when the
+#     router produced a GENERAL decision; firing forces dispatch to the
+#     feature (recorded as keyword_override).
+# unavailable_reply: str
+#     Reply served when the feature raises mid-turn (fault-isolation
+#     boundary). Defaults to DEFAULT_UNAVAILABLE_REPLY.

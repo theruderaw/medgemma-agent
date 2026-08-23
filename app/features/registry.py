@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .base import Feature
+from .settings import get_disabled_feature_names
 
 _REGISTRY: dict[str, Feature] = {}
 
@@ -15,12 +16,26 @@ def get(name: str) -> Feature | None:
     return _REGISTRY.get(name)
 
 
-def enabled_features() -> list[Feature]:
-    """Returns all registered features. Step 5 adds a real enabled/disabled
-    flag backed by settings/DB — until then, every registered feature is
-    considered enabled."""
+def all_features() -> list[Feature]:
+    """Every registered feature, regardless of session-level toggle state."""
     return list(_REGISTRY.values())
 
 
-def tool_schemas() -> list[dict]:
-    return [f.tool_schema.as_dict() for f in enabled_features()]
+async def enabled_features(session_id: str | None = None) -> list[Feature]:
+    """All registered features, minus those explicitly disabled for the
+    session. ``session_id=None`` (no session context) returns everything."""
+    all_features = list(_REGISTRY.values())
+    if session_id is None:
+        return all_features
+    disabled = await get_disabled_feature_names(session_id)
+    return [f for f in all_features if f.name not in disabled]
+
+
+def feature_names(features: list[Feature] | None = None) -> list[str]:
+    """Names of the given features (all registered ones by default)."""
+    return [f.name for f in (features if features is not None else _REGISTRY.values())]
+
+
+async def tool_schemas(session_id: str | None = None) -> list[dict]:
+    enabled = await enabled_features(session_id)
+    return [f.tool_schema.as_dict() for f in enabled]

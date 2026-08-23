@@ -21,16 +21,19 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from app.features.medication_interaction import MEDICATION_QUERY_FORMAT
 from app.prompts.guard import GUARD_FORMAT
 from app.prompts.specialist import SPECIALIST_FORMAT
 from app.prompts.triage import TRIAGE_FORMAT
+
+DEFAULT_TOOL_ARGUMENTS = {"reason": "user reports symptoms"}
 
 SPECIALIST_TOOL_CALL = {
     "id": "call_fake_specialist",
     "type": "function",
     "function": {
         "name": "call_medical_specialist",
-        "arguments": json.dumps({"reason": "user reports symptoms"}),
+        "arguments": json.dumps(DEFAULT_TOOL_ARGUMENTS),
     },
 }
 
@@ -66,10 +69,12 @@ class FakeOllama:
         self._lock = threading.Lock()
         self.requests: list[dict] = []
         self._router_mode = "specialist"
+        self._router_tool_name = "call_medical_specialist"
         self._chat_reply = DEFAULT_CHAT_REPLY
         self._triage_json = TRIAGE_ROUTINE_JSON
         self._guard_json = GUARD_CLEAN_JSON
         self._specialist_json = SPECIALIST_RESULT_JSON
+        self._medication_json = json.dumps({"drug_a": "warfarin", "drug_b": "ibuprofen"})
         self._fail_router_remaining = 0
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._make_handler())
         self.base_url = f"http://127.0.0.1:{self._server.server_address[1]}"
@@ -156,7 +161,15 @@ class FakeOllama:
     def _openai_response(self, body: dict) -> dict:
         if body.get("tools"):
             if self._router_mode == "specialist":
-                message = {"content": "", "tool_calls": [SPECIALIST_TOOL_CALL]}
+                tool_call = {
+                    "id": "call_fake_feature",
+                    "type": "function",
+                    "function": {
+                        "name": self._router_tool_name,
+                        "arguments": json.dumps(DEFAULT_TOOL_ARGUMENTS),
+                    },
+                }
+                message = {"content": "", "tool_calls": [tool_call]}
             else:
                 message = {"content": self._chat_reply}
             return {"choices": [{"message": message}]}
@@ -170,6 +183,8 @@ class FakeOllama:
             return self._guard_json
         if fmt == SPECIALIST_FORMAT:
             return self._specialist_json
+        if fmt == MEDICATION_QUERY_FORMAT:
+            return self._medication_json
         return self._chat_reply
 
     def _native_response(self, body: dict) -> dict:
@@ -187,14 +202,18 @@ class FakeOllama:
         self,
         *,
         router_mode: str | None = None,
+        router_tool_call_name: str | None = None,
         chat_reply: str | None = None,
         triage_json: str | None = None,
         guard_json: str | None = None,
         specialist_json: str | None = None,
+        medication_json: str | None = None,
     ) -> None:
         with self._lock:
             if router_mode is not None:
                 self._router_mode = router_mode
+            if router_tool_call_name is not None:
+                self._router_tool_name = router_tool_call_name
             if chat_reply is not None:
                 self._chat_reply = chat_reply
             if triage_json is not None:
@@ -203,6 +222,8 @@ class FakeOllama:
                 self._guard_json = guard_json
             if specialist_json is not None:
                 self._specialist_json = specialist_json
+            if medication_json is not None:
+                self._medication_json = medication_json
 
     def fail_next_router_calls_with(self, status: int = 500, count: int = 999) -> None:
         """Serve `status` for the next `count` router calls (permanent-failure paths)."""
@@ -214,10 +235,12 @@ class FakeOllama:
         with self._lock:
             self.requests.clear()
             self._router_mode = "specialist"
+            self._router_tool_name = "call_medical_specialist"
             self._chat_reply = DEFAULT_CHAT_REPLY
             self._triage_json = TRIAGE_ROUTINE_JSON
             self._guard_json = GUARD_CLEAN_JSON
             self._specialist_json = SPECIALIST_RESULT_JSON
+            self._medication_json = json.dumps({"drug_a": "warfarin", "drug_b": "ibuprofen"})
             self._fail_router_remaining = 0
 
     # -- request inspection --------------------------------------------------
@@ -244,6 +267,8 @@ class FakeOllama:
                     matched = kind == "guard"
                 elif fmt == SPECIALIST_FORMAT:
                     matched = kind == "specialist"
+                elif fmt == MEDICATION_QUERY_FORMAT:
+                    matched = kind == "medication"
                 else:
                     matched = kind == "vision_stream"
             if matched:

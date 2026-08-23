@@ -1,3 +1,7 @@
+// ---------------------------------------------------------------------------
+// Wire types — mirror the FastAPI schemas exactly. UI-only types live next to
+// their components.
+
 export type Urgency = 'emergency' | 'urgent' | 'routine' | 'self_care' | null;
 
 /** An image picked in the UI, ready to ride along with a chat request. */
@@ -72,19 +76,34 @@ export interface AuditRecord {
   created_at: number;
 }
 
-export type MessageRole = 'user' | 'assistant' | 'error';
+/** GET /v1/sessions/{id}/messages row — persisted conversation turn. */
+export interface SessionMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  /** Pipeline turn that produced this message (absent on legacy rows). */
+  turn_id?: string | null;
+}
 
-export interface Message {
-  id: number;
-  role: MessageRole;
-  text: string;
-  thinking?: boolean;
-  streaming?: boolean;
-  urgency?: Urgency;
-  events?: AuditEvent[];
-  /** Client-side preview of an image attached to a user message. */
-  imagePreview?: string;
-  /** MedGemma clinical note, accumulated live from specialist_token events. */
-  specialistNote?: string;
-  specialistStreaming?: boolean;
+export interface SessionHistory {
+  session_id: string;
+  created_at: number;
+  last_activity: number;
+  messages: SessionMessage[];
+}
+
+/** GET /v1/sessions/recent entry — one recently active conversation. */
+export interface RecentChat {
+  session_id: string;
+  created_at: number;
+  last_activity: number;
+  message_count: number;
+  preview?: string | null;
+}
+
+/** GET /v1/features entry — one registered add-on and its session toggle state. */
+export interface FeatureInfo {
+  name: string;
+  description: string;
+  enabled: boolean;
+  disclaimer_level: 'standard' | 'high';
 }

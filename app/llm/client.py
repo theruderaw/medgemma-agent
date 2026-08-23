@@ -208,15 +208,18 @@ class LLMClient:
         images: list[str] | None = None,
         temperature: float = 0.7,
         model: str | None = None,
+        output_format: dict | None = None,
     ) -> AsyncIterator[str]:
-        """Stream the structured specialist assessment while it is generated.
+        """Stream a format-constrained structured assessment while it is generated.
 
         Native /api/chat with BOTH ``stream: true`` and the ``format``
-        constraint: MedGemma emits the JSON object incrementally (the longest
+        constraint: the model emits the JSON object incrementally (the longest
         stage of every turn), so raw deltas surface token-by-token instead of
         blocking silently. The caller accumulates deltas; the completed text
         is still a format-constrained JSON document ready for parsing.
         Optional base64 ``images`` ride on the last user message.
+        ``output_format`` lets a Feature supply its own constraint; it
+        defaults to the clinical-assessment specialist schema.
         """
         model = model or settings.specialist_model_name
         logger.info(
@@ -231,7 +234,7 @@ class LLMClient:
             "messages": payload_messages,
             "stream": True,
             "temperature": temperature,
-            "format": SPECIALIST_FORMAT,
+            "format": output_format or SPECIALIST_FORMAT,
         }
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             async with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as response:

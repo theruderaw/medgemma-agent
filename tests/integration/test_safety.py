@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from app.safety.invariants import PROFESSIONAL_REVIEW_NOTE
 from app.safety.output import DIAGNOSTIC_CAUTION
 
 from .conftest import wait_for_job
@@ -83,6 +84,95 @@ class TestSafetyInvariants:
         assert "emergency_bypass" in invariant_events[0]["payload"]["violations"]
         assert "replace_emergency_response" in invariant_events[0]["payload"]["actions"]
         assert "local emergency number" in result["response"]
+
+
+class TestSafetyProfiles:
+    async def _completed(
+        self,
+        client,
+        fake_ollama,
+        *,
+        message: str,
+        triage: bool = False,
+        **config,
+    ) -> dict:
+        fake_ollama.configure(**config)
+        response = await client.post(
+            "/v1/chat",
+            params={"triage": "true"} if triage else None,
+            json={"message": message},
+        )
+        assert response.status_code == 202
+        return (await wait_for_job(client, response.json()["job_id"]))["result"]
+
+    async def test_high_disclaimer_feature_gets_review_note(self, client, fake_ollama):
+        """Medication interaction (disclaimer_level=high) always carries the
+        professional-review note, recorded via the violations/actions pattern."""
+        result = await self._completed(
+            client,
+            fake_ollama,
+            message="can I take warfarin and ibuprofen together?",
+            router_tool_call_name="check_medication_interaction",
+        )
+
+        assert PROFESSIONAL_REVIEW_NOTE in result["response"]
+        invariant_events = [
+            e for e in result["events"] if e["event_type"] == "safety_invariant"
+        ]
+        assert invariant_events
+        assert "profile_professional_review" in invariant_events[0]["payload"]["violations"]
+        assert (
+            "append_professional_review_note" in invariant_events[0]["payload"]["actions"]
+        )
+
+    async def test_standard_disclaimer_feature_gets_no_extra_note(self, client, fake_ollama):
+        """Symptom triage (standard disclaimer) must NOT carry the note."""
+        result = await self._completed(
+            client,
+            fake_ollama,
+            message="my elbow hurts a little",
+            router_tool_call_name="run_symptom_triage",
+            triage_json=json.dumps({"urgency": "routine"}),
+        )
+
+        assert PROFESSIONAL_REVIEW_NOTE not in result["response"]
+        assert not [e for e in result["events"] if e["event_type"] == "safety_invariant"]
+
+    async def test_emergency_floor_overrides_any_profile(self, client, fake_ollama):
+        """The red-flag floor runs before routing: even with the router set to
+        select the strictest-profile feature, nothing else may run or speak."""
+        response = await client.post(
+            "/v1/chat",
+            json={"message": "I have chest pain"},
+        )
+        assert response.status_code == 200
+        body = response.json()
+
+        assert body["urgency"] == "emergency"
+        assert any(e["event_type"] == "safety_override" for e in body["events"])
+        assert PROFESSIONAL_REVIEW_NOTE not in body["response"]
+        assert fake_ollama.calls("route") == []
+        assert fake_ollama.calls("medication") == []
+
+    async def test_emergency_triage_replacement_ignores_profile(self, client, fake_ollama):
+        """Structured EMERGENCY triage + a high-profile feature selected: the
+        draft is replaced by the hardcoded template and the profile note is
+        never appended to it — the floor's text is untouchable."""
+        result = await self._completed(
+            client,
+            fake_ollama,
+            message="my stomach hurts",
+            triage=True,
+            router_tool_call_name="check_medication_interaction",
+            triage_json=json.dumps({"urgency": "emergency"}),
+        )
+
+        assert "local emergency number" in result["response"]
+        assert PROFESSIONAL_REVIEW_NOTE not in result["response"]
+        invariant_events = [
+            e for e in result["events"] if e["event_type"] == "safety_invariant"
+        ]
+        assert "emergency_bypass" in invariant_events[0]["payload"]["violations"]
 
 
 class TestOutputGuardrails:

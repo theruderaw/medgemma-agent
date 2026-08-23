@@ -1,6 +1,6 @@
 from ..triage import TriageResult, Urgency
 
-_TRIAGE_INSTRUCTIONS = (
+TRIAGE_INSTRUCTIONS = (
     "You are a medical triage classifier.\n"
     "Assess the urgency of the user's message.\n\n"
     "Urgency levels:\n"
@@ -16,7 +16,7 @@ _TRIAGE_INSTRUCTIONS = (
     'Output exactly: {"urgency":"emergency|urgent|routine|self_care"}'
 )
 
-TRIAGE_PROMPT = _TRIAGE_INSTRUCTIONS + "\n\nMessage: {message}"
+TRIAGE_PROMPT = TRIAGE_INSTRUCTIONS + "\n\nMessage: {message}"
 
 
 TRIAGE_FORMAT = {

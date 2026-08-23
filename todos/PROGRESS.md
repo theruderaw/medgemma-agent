@@ -18,10 +18,23 @@
 
 ## Current status
 
-- **Active step:** Step 2 complete — next is Step 3 (`04-step3-new-addons.md`, task 3.1)
-- **Last updated by:** ox-alpha session, 2026-08-22
-- **Blockers / open questions:** none. `CLEANUP_NOTES.md` deleted; its still-relevant
-  content (config-naming convention for Step 5) is preserved in the Step 5 section below.
+- **Active step:** Step 5 complete (with documented deviations) — only final
+  sign-off remains, blocked on the broken integration suite
+- **Post-step-5 additions (2026-08-23):** routing fix for contextual medication
+  mentions (tool description + router prompt now prefer specific lookups);
+  frontend fully rewritten (lib/hooks/ui/chat/addons/logs/layout structure,
+  clinical dark tokens); persistent event timelines — `messages.turn_id`
+  column + migration `b91c4de2f7a3`, history endpoint returns `turn_id`,
+  restore joins `/v1/audit` by turn, timeline expansion state hoisted into the
+  conversation reducer; new `GET /v1/sessions/recent` endpoint + "Recent"
+  chat-switcher dropdown in the header.
+- **Last updated by:** ox-alpha session, 2026-08-23
+- **Blockers / open questions:** the integration suite is RED (~20 failures:
+  jobs never complete under the fake-Ollama worker; root cause not yet fixed).
+  Per user decision, test repairs are delegated elsewhere ("I'll get the
+  tests from Claude") and Step 5 was verified with a live-model smoke suite
+  (`scripts/smoke_suite.py`) instead of pytest. Steps 3–5 changes are
+  uncommitted (user has not requested a commit).
 
 ---
 
@@ -89,42 +102,120 @@ Suite now 36 passed (35 baseline + 1 new).
 ---
 
 ## Step 3 — New Add-on Features (`04-step3-new-addons.md`)
-- [ ] 3.1 `app/features/symptom_triage.py` — existing triage wrapped as a feature
-- [ ] 3.1a Always-on `triage=True` flag path confirmed untouched
-- [ ] 3.2 `app/features/medication_interaction.py` (optional — mark N/A if skipped)
-- [ ] 3.2a Curated dataset added under `app/features/data/`, LLM only phrases, never originates claims
-- [ ] 3.3 `app/features/lab_value_interpreter.py` (optional — mark N/A if skipped)
-- [ ] 3.4 All new features registered in `app/features/__init__.py`
-- [ ] 3.5 Integration tests added per new feature (incl. "no data" branch for medication feature)
-- [ ] `pytest` green including new tests
+- [x] 3.1 `app/features/symptom_triage.py` — existing triage wrapped as a feature
+- [x] 3.1a Always-on `triage=True` flag path confirmed untouched
+- [x] 3.2 `app/features/medication_interaction.py` (optional — mark N/A if skipped)
+- [x] 3.2a Curated dataset added under `app/features/data/`, LLM only phrases, never originates claims
+- [ ] 3.3 `app/features/lab_value_interpreter.py` — **N/A, skipped** (doc: #2 OR #3)
+- [x] 3.4 All new features registered in `app/features/__init__.py`
+- [x] 3.5 Integration tests added per new feature (incl. "no data" branch for medication feature)
+- [x] `pytest` green including new tests
 
-**Notes:**
+**Notes:** Suite 36 → 42 passed. Deviations / interface decisions: (1) The
+Feature protocol was completed ONCE (the doc's sanctioned "revisit the
+interface" path): added `model_setting` + `format_schema` members;
+`llm.specialist_stream` gained an optional `output_format` param (default
+keeps SPECIALIST_FORMAT); `run_chat_turn` resolves model/format from the
+selected feature. Required because a router-selected triage must be
+constrained to TRIAGE_FORMAT, not the hardcoded specialist schema. (2)
+Invariant inputs read defensively (`uncertain`, `body_part_unknown`,
+`limitations`) since feature results are heterogeneous dataclasses.
+(3) Medication deviates from the doc's literal "extract drugs from tool-call
+arguments": extraction happens in the streamed stage via
+MEDICATION_QUERY_FORMAT because dispatch never hands tool args to features;
+dataset still originates every claim and the unknown-pair branch yields the
+explicit no-data context (unit-tested). (4) Audit event module stays
+"specialist"/"specialist_output" for all streamed features to preserve the
+audit JSON shape; per-feature module naming deferred to Step 5. (5)
+`fake_ollama.py` extended: configurable router tool name + medication-format
+branch + `calls("medication")`.
 
 ---
 
 ## Step 4 — Per-Feature Safety Profiles (`05-step4-safety-profiles.md`)
-- [ ] 4.1 `app/safety/invariants.py` and `app/safety/output.py` read fully, `violations`/`actions` pattern confirmed
-- [ ] 4.2 `safety_profile` param added with `None` default, verified behavior-neutral
-- [ ] 4.3 Additive profile-driven disclaimer logic added
-- [ ] 4.4 `run_chat_turn` passes `feature.safety_profile` through
-- [ ] 4.5 Test: high-disclaimer feature gets extra note, low-disclaimer doesn't
-- [ ] 4.5a Test: emergency floor fires regardless of feature/profile (explicit, high priority)
-- [ ] `pytest` green
+- [x] 4.1 `app/safety/invariants.py` and `app/safety/output.py` read fully, `violations`/`actions` pattern confirmed
+- [x] 4.2 `safety_profile` param added with `None` default, verified behavior-neutral
+- [x] 4.3 Additive profile-driven disclaimer logic added
+- [x] 4.4 `run_chat_turn` passes `feature.safety_profile` through
+- [x] 4.5 Test: high-disclaimer feature gets extra note, low-disclaimer doesn't
+- [x] 4.5a Test: emergency floor fires regardless of feature/profile (explicit, high priority)
+- [x] `pytest` green
+
+**Notes:** Implemented in four verified stages (42 → 42 → 42 → 46 passed).
+(4.2) Signature-only first: `safety_profile: SafetyProfile | None = None` on
+`enforce_safety_invariants` + `run_output_guard`; suite confirmed unchanged
+before any logic landed. Doc snippet says `EnforcedResult`; kept the real
+class name `EnforcedResponse`. (4.3) invariants: `disclaimer_level == "high"`
+→ append `PROFESSIONAL_REVIEW_NOTE` via the existing `add()` helper
+(violation `profile_professional_review`, action
+`append_professional_review_note`) — placed after the emergency early-return,
+so the floor's replacement text is never touched by a profile. output guard:
+`requires_professional_review` note fires ONLY when the guard already found
+violations and urgency is not EMERGENCY — an always-on trigger would have
+broken the two existing tests asserting no `output_guardrail` event on clean
+specialist turns, and would also contradict the default-profile regression
+guarantee (`SafetyProfile.requires_professional_review` defaults to True).
+Note constant lives in `invariants.py`, imported by `output.py` (no cycle;
+`safety` → `features.base` is a leaf import). (4.4) chat.py hoists
+`feature = None` above the dispatch branch and passes
+`feature.safety_profile if feature else None` at both call sites.
+Observable effect on existing flows: specialist turns now append the review
+note and record one extra `safety_invariant` audit event — verified every
+existing assertion is subset/substring-based, so all 42 stayed green
+unchanged. (4.5/4.5a) New `TestSafetyProfiles` (4 tests): medication turn
+gets note + recorded violation/action; symptom-triage turn gets neither;
+red-flag message short-circuits before routing even when the router is set
+to select the strictest-profile feature (zero model calls); structured
+EMERGENCY triage + high-profile feature → template replaces draft and NO
+profile note is appended to it.
 
 **Notes:**
 
 ---
 
 ## Step 5 — API, DB, Frontend Toggles (`06-step5-api-db-frontend.md`)
-- [ ] 5.1 Persistence scope decided (session-scoped vs global default) and documented here
-- [ ] 5.2 Alembic migration for `feature_settings` written, `alembic upgrade head` runs clean
-- [ ] 5.3 `app/features/settings.py` created; `enabled_features(session_id=...)` respects stored state
-- [ ] 5.3a All call sites of `enabled_features(`/`tool_schemas(` updated to pass `session_id`
-- [ ] 5.4 `GET /v1/features` and `POST /v1/features/{name}` added to `app/main.py` + schemas
-- [ ] 5.5 Frontend settings panel added, matches existing `frontend/src` patterns
-- [ ] 5.5a High-`disclaimer_level` features visually distinguished in UI
-- [ ] 5.6 Tests: toggle affects router tool list; emergency floor unaffected by any toggle state
-- [ ] `pytest` green
+- [x] 5.1 Persistence scope decided (session-scoped vs global default) and documented here
+- [x] 5.2 Alembic migration for `feature_settings` written, `alembic upgrade head` runs clean
+- [x] 5.3 `app/features/settings.py` created; `enabled_features(session_id=...)` respects stored state
+- [x] 5.3a All call sites of `enabled_features(`/`tool_schemas(` updated to pass `session_id`
+- [x] 5.4 `GET /v1/features` and `POST /v1/features/{name}` added to `app/main.py` + schemas
+- [x] 5.5 Frontend settings panel added, matches existing `frontend/src` patterns
+- [x] 5.5a High-`disclaimer_level` features visually distinguished in UI
+- [ ] 5.6 Tests: toggle affects router tool list; emergency floor unaffected by any toggle state — **done as live smoke checks, not pytest** (see Notes)
+- [ ] `pytest` green — **NOT met** (see Notes)
+
+**Notes:** Scope decision (5.1): session-scoped toggles only — no user-account
+concept exists; a missing `feature_settings` row means "enabled", only
+explicit disabled rows are stored (docstring in `app/features/settings.py`).
+(5.2) Migration `aa73abbdd360_add_feature_settings.py`; runs clean on API
+startup via `_run_migrations()`. (5.4) Routes return 404 for unknown feature
+and unknown/expired session (mirrors `reset_session`); toggles are audited
+(`module="features"`, `event_type="feature_toggled"`); registry gained a
+read-only `all_features()` accessor so the list endpoint can show disabled
+entries. (5.5) New `FeaturesPanel.tsx` + `useFeatures.ts` hook under an
+"Add-ons" header tab; optimistic toggle with rollback + error banner;
+toggling disabled until a session exists. (5.5a) `disclaimer_level == "high"`
+renders a persistent amber "high stakes" badge next to the feature.
+
+Deviations from the doc: (1) **Beyond scope:** added
+`GET /v1/sessions/{session_id}/messages` (full persisted conversation,
+oldest-first) plus frontend history restore on load (`useChat` rehydrates
+from Postgres via the localStorage session id; 404 clears the stale session),
+because the user asked for chat-history-from-DB explicitly.
+(2) **Verification replaced:** per user instruction ("fuck the tests do 5
+smoke tests each type"), 5.6 was verified live instead of via pytest:
+`scripts/smoke_suite.py` runs 7 types × 5 rounds against the real stack —
+general, symptom+triage, emergency, image-attached, `/v1/triage`,
+features-toggle round-trip (asserts the disabled specialist disappears from /
+returns to the router's tool list via the `routing_decision` audit payload's
+`tools`, plus 404 on unknown feature), and history round-trip (sent message +
+assistant reply both persisted and served back). Result: every check passed
+in all rounds except 3 rounds that died on **Ollama ReadTimeouts**
+(model-server latency >120s × 3 Celery retries under sustained load — the
+app's retry/failure path behaved as designed). `pytest` remains red from the
+pre-existing harness breakage (~20 tests, jobs stuck pending); repairs
+delegated per user. Frontend typechecks/builds clean (`tsc -b && vite build`);
+ruff shows zero new findings vs baseline.
 
 **Notes:** Config-naming convention (absorbed from Step 0's
 `CLEANUP_NOTES.md` §0.6): `app/core/config.py` = plain class of class-level
@@ -139,6 +230,6 @@ config table omits `MAX_HISTORY_MESSAGES`, default 40.)
 ---
 
 ## Final sign-off (all steps complete)
-- [ ] Full `pytest` suite green
-- [ ] Manual smoke test: general chat, symptom-related chat, image-attached chat, emergency phrase — all behave correctly
+- [ ] Full `pytest` suite green — blocked: integration harness broken (~20 failures), repairs delegated per user
+- [ ] Manual smoke test: general chat, symptom-related chat, image-attached chat, emergency phrase — **done via `scripts/smoke_suite.py`** (7 types × 5 rounds; all passed except 3 Ollama-ReadTimeout rounds)
 - [ ] All step docs' "What NOT to do" sections re-checked against final diff (no violations introduced across the whole project, even ones from an earlier step that a later step's edits might have quietly undone)
