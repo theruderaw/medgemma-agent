@@ -26,17 +26,6 @@ class MessageRow(SQLModel, table=True):
     turn_id: str | None = None
 
 
-class FeatureSettingRow(SQLModel, table=True):
-    __tablename__ = "feature_settings"
-
-    session_id: str = Field(
-        foreign_key="sessions.session_id", ondelete="CASCADE", primary_key=True
-    )
-    feature_name: str = Field(primary_key=True)
-    enabled: bool
-    updated_at: float
-
-
 class AuditEventRow(SQLModel, table=True):
     __tablename__ = "audit_events"
     __table_args__ = (

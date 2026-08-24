@@ -1,6 +1,5 @@
 import re
 
-
 # A deliberation preamble ends with a labeled answer marker, e.g.
 #   "...should respond directly without triggering the specialist tool.\nResponse: ..."
 # Everything up to and including the marker is model reasoning that must never

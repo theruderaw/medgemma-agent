@@ -2,7 +2,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from ..triage import TriageResult, Urgency
+from ..domain.triage import TriageResult, Urgency
 
 
 class ChatRequest(BaseModel):
@@ -111,18 +111,18 @@ class AppConfigResponse(BaseModel):
     image_allowed_mime: list[str]
 
 
-class FeatureInfo(BaseModel):
+class AddonInfo(BaseModel):
     name: str
     description: str
     enabled: bool
     disclaimer_level: str
 
 
-class FeatureListResponse(BaseModel):
-    features: list[FeatureInfo]
+class AddonListResponse(BaseModel):
+    addons: list[AddonInfo]
 
 
-class FeatureToggleRequest(BaseModel):
+class AddonToggleRequest(BaseModel):
     enabled: bool
 
 

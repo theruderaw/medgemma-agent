@@ -12,7 +12,7 @@ import type {
   AuditEvent,
   AuditRecord,
   ChatResponse,
-  FeatureInfo,
+  AddonInfo,
   JobResponse,
   QueuedChatResponse,
   RecentChat,
@@ -271,34 +271,34 @@ export async function fetchAuditEvents(
 }
 
 // ---------------------------------------------------------------------------
-// Feature add-ons: per-session toggles backed by feature_settings.
+// Add-ons: per-session toggles backed by addon_settings.
 
-/** GET /v1/features — registered add-ons; `sessionId` scopes the enabled flags. */
-export async function fetchFeatures(sessionId: string | null): Promise<FeatureInfo[]> {
+/** GET /v1/addons — registered add-ons; `sessionId` scopes the enabled flags. */
+export async function fetchAddons(sessionId: string | null): Promise<AddonInfo[]> {
   const qs = sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : '';
-  const res = await fetch(apiUrl(`/v1/features${qs}`));
-  const data = await json<{ features: FeatureInfo[] }>(res);
-  return data.features;
+  const res = await fetch(apiUrl(`/v1/addons${qs}`));
+  const data = await json<{ addons: AddonInfo[] }>(res);
+  return data.addons;
 }
 
 /**
- * POST /v1/features/{name} — toggle one add-on for the session.
- * Throws ApiError (404 unknown feature/session); callers roll back optimistically.
+ * POST /v1/addons/{name} — toggle one add-on for the session.
+ * Throws ApiError (404 unknown addon/session); callers roll back optimistically.
  */
-export async function toggleFeature(
+export async function toggleAddon(
   name: string,
   enabled: boolean,
   sessionId: string,
-): Promise<FeatureInfo> {
+): Promise<AddonInfo> {
   const res = await fetch(
-    apiUrl(`/v1/features/${encodeURIComponent(name)}?session_id=${encodeURIComponent(sessionId)}`),
+    apiUrl(`/v1/addons/${encodeURIComponent(name)}?session_id=${encodeURIComponent(sessionId)}`),
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled }),
     },
   );
-  return json<FeatureInfo>(res);
+  return json<AddonInfo>(res);
 }
 
 /** GET /v1/sessions/{id}/messages — persisted conversation, oldest first. */

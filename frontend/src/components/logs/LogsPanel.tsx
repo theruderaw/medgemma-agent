@@ -10,10 +10,10 @@ const MODULE_TONES: Record<string, 'accent' | 'safety' | 'high' | 'neutral'> = {
   triage: 'high',
   specialist: 'neutral',
   image: 'high',
-  feature: 'high',
+  addon: 'high',
   session: 'accent',
   job: 'neutral',
-  features: 'accent',
+  addons: 'accent',
 };
 
 function moduleTone(module: string): 'accent' | 'safety' | 'high' | 'neutral' {

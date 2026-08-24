@@ -8,7 +8,7 @@ FRONTEND_PID := $(LOG_DIR)/frontend.pid
 # (`kill -TERM -- -PID` -> "Illegal number"), which orphans vite/celery children.
 SHELL := /bin/bash
 
-.PHONY: up api worker frontend stop logs test
+.PHONY: up api worker frontend stop logs test check-arch
 
 # Start the whole stack detached: API + worker + frontend dev server.
 up: api worker frontend
@@ -75,3 +75,7 @@ logs:
 
 test:
 	$(VENV)/pytest
+
+# Fail on any app -> app.addons or registry -> app import edge.
+check-arch:
+	$(VENV)/python scripts/check_architecture.py

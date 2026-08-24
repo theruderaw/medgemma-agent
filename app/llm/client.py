@@ -1,14 +1,13 @@
 import json
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 
 import httpx
-from dataclasses import dataclass
 
 from ..core.config import settings
 from ..core.logging import get_logger
-from ..prompts.guard import GUARD_FORMAT, GUARD_PROMPT
-from ..prompts.specialist import SPECIALIST_FORMAT
-from ..prompts.triage import TRIAGE_FORMAT, TRIAGE_PROMPT
+from ..prompts.composed import GUARD_PROMPT, TRIAGE_PROMPT
+from ..prompts.formats import GUARD_FORMAT, SPECIALIST_FORMAT, TRIAGE_FORMAT
 
 logger = get_logger("app.llm.client")
 
@@ -218,7 +217,7 @@ class LLMClient:
         blocking silently. The caller accumulates deltas; the completed text
         is still a format-constrained JSON document ready for parsing.
         Optional base64 ``images`` ride on the last user message.
-        ``output_format`` lets a Feature supply its own constraint; it
+        ``output_format`` lets an Addon supply its own constraint; it
         defaults to the clinical-assessment specialist schema.
         """
         model = model or settings.specialist_model_name

@@ -12,7 +12,7 @@ const MODULE_ACCENT: Record<string, string> = {
   router: 'border-accent-400',
   specialist: 'border-emerald-500',
   image: 'border-amber-400',
-  feature: 'border-orange-500',
+  addon: 'border-orange-500',
   chat: 'border-slate-500',
 };
 
@@ -27,14 +27,14 @@ function stepLabel(ev: AuditEvent): string {
       return p.source === 'vision' ? 'Triage (vision)' : 'Triage';
     case 'routing_decision':
       if (p.image_override) return 'Image → specialist';
-      if (p.keyword_override) return 'Keyword → feature';
+      if (p.keyword_override) return 'Keyword → addon';
       return p.category === 'symptom_related' ? 'Call specialist' : 'Routing';
     case 'specialist_output':
-      return p.mode === 'deterministic' ? 'Feature (deterministic)' : 'Specialist note';
-    case 'feature_failed':
-      return `Feature failed (${p.feature ?? 'unknown'})`;
+      return p.mode === 'deterministic' ? 'Addon (deterministic)' : 'Specialist note';
+    case 'addon_failed':
+      return `Addon failed (${p.addon ?? 'unknown'})`;
     case 'turn_completed':
-      if (p.path === 'feature_unavailable') return 'Feature unavailable fallback';
+      if (p.path === 'addon_unavailable') return 'Addon unavailable fallback';
       return 'Synthesis';
     default:
       return ev.event_type;
@@ -95,10 +95,10 @@ function EventPayload({ ev }: { ev: AuditEvent }) {
           {p.mode != null && kv('mode', p.mode)}
         </div>
       );
-    case 'feature_failed':
+    case 'addon_failed':
       return (
         <div className="flex flex-col gap-1">
-          {kv('feature', p.feature)}
+          {kv('addon', p.addon)}
           {kv('error', p.error)}
         </div>
       );
