@@ -1,19 +1,28 @@
-ROUTING_SYSTEM_PROMPT = (
-    "You are the routing layer of a medical chat assistant. Given the "
-    "conversation, decide whether the user's latest message describes a health "
-    "symptom or medical concern that needs a clinical specialist's assessment.\n\n"
-    "If it does, call the call_medical_specialist tool with a concise reason.\n"
-    "If the message is general (greeting, chit-chat, admin question, thanks), "
-    "reply directly to the user without calling any tool.\n\n"
-    "Several specialist tools may be offered. When more than one fits, choose "
-    "the most specific one: prefer a curated or deterministic lookup over the "
-    "general clinical assessment whenever its trigger matches — read each "
-    "tool's description carefully, including cases where key details (like a "
-    "medication the patient already takes) come from earlier conversation "
-    "rather than the latest message.\n\n"
-    "An attached image is potential clinical evidence: if the user attached an "
-    "image, call the specialist tool unless the turn is clearly not medical.\n\n"
-    "Never attempt to handle emergencies yourself: if the user describes a "
-    "life-threatening situation, still respond with clear advice to seek "
-    "immediate emergency care, and do not call the specialist tool for it."
-)
+"""Router system prompt, rendered per turn from the actually-offered tools.
+
+The prompt never names a specific addon: the tool bullet list is generated
+from whatever the registry offers for the session, so adding, renaming, or
+removing an addon needs no prompt edit.
+"""
+
+from string import Template
+
+from .loader import load_prompt
+
+_TEMPLATE = Template(load_prompt("routing"))
+
+_NO_TOOLS_LINE = "- (no specialist tools are available this turn)"
+
+
+def build_routing_prompt(tools: list[dict]) -> str:
+    """Render the routing prompt with one bullet per offered tool.
+
+    ``tools`` are the OpenAI-style dicts already built for the router call
+    (``ToolSchema.as_dict`` output), reused so prompt and tool payload can
+    never disagree.
+    """
+    bullets = "\n".join(
+        f"- {tool['function']['name']}: {tool['function']['description']}"
+        for tool in tools
+    )
+    return _TEMPLATE.substitute(tool_instructions=bullets or _NO_TOOLS_LINE)

@@ -1,4 +1,4 @@
-import { useFeatures } from '../../hooks/useFeatures';
+import { useAddons } from '../../hooks/useAddons';
 import Badge from '../ui/Badge';
 import ToggleSwitch from '../ui/ToggleSwitch';
 
@@ -6,9 +6,9 @@ interface Props {
   sessionId: string | null;
 }
 
-/** Per-session add-on toggles (router-selectable features). */
+/** Per-session add-on toggles (router-selectable addons). */
 export default function AddonsPanel({ sessionId }: Props) {
-  const { features, loading, error, pending, toggle } = useFeatures(sessionId);
+  const { addons, loading, error, pending, toggle } = useAddons(sessionId);
 
   return (
     <main aria-live="polite" className="flex flex-1 flex-col overflow-y-auto p-5">
@@ -34,7 +34,7 @@ export default function AddonsPanel({ sessionId }: Props) {
         {loading && <div className="text-xs italic text-slate-500">Loading add-ons…</div>}
 
         {!loading &&
-          features.map((f) => (
+          addons.map((f) => (
             <div key={f.name} className="panel flex items-start justify-between gap-4 p-3.5">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">

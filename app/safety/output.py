@@ -21,9 +21,9 @@ import httpx
 
 from ..core.config import settings
 from ..core.logging import get_logger
-from ..features.base import SafetyProfile
+from ..domain.triage import Urgency
 from ..llm import llm
-from ..triage import Urgency
+from ..registry import SafetyProfile
 from .invariants import PROFESSIONAL_REVIEW_NOTE
 from .rules import EMERGENCY_RESPONSE, detect_emergency
 
@@ -107,7 +107,7 @@ async def run_output_guard(
     the draft passes through unchanged (the deterministic emergency floor has
     already run at that point). ``safety_profile`` may only ADD a
     professional-review note on top of fixes the guard already applied for
-    features that require review; it never weakens a check and never touches
+    addons that require review; it never weakens a check and never touches
     the emergency replacement.
     """
     violations: list[str] = []
@@ -167,7 +167,7 @@ async def run_output_guard(
         # bypass verdict earns the escalation note rather than a full replace.
         add_note("emergency_bypass", "append_escalation_note", ESCALATION_NOTE)
 
-    # Profile-driven, strictly additive: features that require professional
+    # Profile-driven, strictly additive: addons that require professional
     # review reinforce any corrections the guard already applied with the
     # review note — never added to an otherwise-clean reply, never on the
     # emergency path.

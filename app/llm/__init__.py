@@ -3,4 +3,4 @@
 from .client import LLMClient, llm
 from .parsing import StreamExtractor, extract_answer
 
-__all__ = ["LLMClient", "llm", "StreamExtractor", "extract_answer"]
+__all__ = ["LLMClient", "StreamExtractor", "extract_answer", "llm"]

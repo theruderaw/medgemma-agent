@@ -20,8 +20,8 @@ Every applied fix is returned as violations/actions so callers can audit it.
 import re
 from dataclasses import dataclass, field
 
-from ..features.base import SafetyProfile
-from ..triage import Urgency
+from ..domain.triage import Urgency
+from ..registry import SafetyProfile
 from .rules import EMERGENCY_RESPONSE, detect_emergency
 
 PROFESSIONAL_REVIEW_NOTE = (
@@ -99,7 +99,7 @@ def enforce_safety_invariants(
     Order matters: the emergency floor replaces the whole draft, so the
     phrasing checks only run for non-emergency drafts. ``safety_profile``
     may only ADD stricter behavior (an extra professional-review
-    disclaimer for high-disclaimer features); it can never weaken or skip
+    disclaimer for high-disclaimer addons); it can never weaken or skip
     a baseline check, and it is never consulted on the emergency path.
     """
     if urgency is Urgency.EMERGENCY:
@@ -132,7 +132,7 @@ def enforce_safety_invariants(
     if not image_analyzed and _IMAGE_CLAIM_RE.search(text):
         add("image_claim_without_image", "append_no_image_note", IMAGE_NOT_VIEWED_NOTE)
 
-    # Profile-driven, strictly additive: a high-disclaimer feature always
+    # Profile-driven, strictly additive: a high-disclaimer addon always
     # carries the professional-review note on top of whatever the baseline
     # checks produced. Never consulted on the emergency path above.
     if safety_profile is not None and safety_profile.disclaimer_level == "high":

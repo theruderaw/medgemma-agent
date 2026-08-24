@@ -6,6 +6,7 @@ import structlog
 from celery import Celery
 
 from .audit import audit, trim_llm_payload
+from .bootstrap import bootstrap_addons
 from .core.config import settings
 from .core.logging import get_logger, setup_logging
 from .jobs import append_event, clear_events
@@ -13,6 +14,7 @@ from .jobs import append_event, clear_events
 logger = get_logger("app.worker")
 
 setup_logging()
+bootstrap_addons()
 
 
 class TransientModelError(Exception):
@@ -24,9 +26,17 @@ class JobProcessingError(Exception):
 
 
 def _model_server_error(exc: Exception) -> str:
-    """A message prefixed `model-server-` so the API can classify LLM failures."""
+    """A message prefixed `model-server-` so the API can classify LLM failures.
+
+    The upstream body excerpt is included: Ollama's error JSON names the real
+    problem (unsupported feature, unknown model), which a bare status code
+    discards.
+    """
     if isinstance(exc, httpx.HTTPStatusError):
-        return f"model-server-http:{exc.response.status_code}"
+        return (
+            f"model-server-http:{exc.response.status_code}:"
+            f" {exc.response.text[:300]}"
+        )
     return f"model-server-transport:{type(exc).__name__}"
 
 
@@ -75,8 +85,8 @@ def process_turn(
     only transient model-server failures (unreachable, timeout, 502/503);
     all other errors propagate as a permanent task failure.
     """
+    from .chat.turn import run_chat_turn
     from .core.images import ProcessedImage
-    from .services.chat import run_chat_turn
 
     job_id = self.request.id
 

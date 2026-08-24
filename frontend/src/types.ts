@@ -100,8 +100,8 @@ export interface RecentChat {
   preview?: string | null;
 }
 
-/** GET /v1/features entry — one registered add-on and its session toggle state. */
-export interface FeatureInfo {
+/** GET /v1/addons entry — one registered add-on and its session toggle state. */
+export interface AddonInfo {
   name: string;
   description: string;
   enabled: boolean;
