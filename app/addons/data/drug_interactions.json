@@ -1,61 +1,565 @@
 {
   "_meta": {
-    "purpose": "Curated drug-interaction lookup for the medication_interaction addon. The dataset originates every interaction claim; the LLM only phrases explanations. Demo-curated, textbook-level subset — verify against a real drug knowledge base before any production use.",
-    "schema": {"<sorted pair 'drug_a+drug_b'>": {"severity": "major|moderate", "effect": "what the combination may cause", "guidance": "what the user should do"}}
+    "purpose": "Curated high-yield drug-interaction lookup for a demo medication_interaction addon.",
+    "warning": "This dataset is not comprehensive, is not a clinical decision support database, and must not be treated as authoritative medical advice.",
+    "source_note": "DrugBank documents that production DDI datasets contain substantially more interactions and structured severity/management fields; FDA and DailyMed provide authoritative labeling and interaction information. This file is a curated subset synthesized for software testing, not copied from a proprietary database.",
+    "schema": {
+      "<sorted pair 'drug_a+drug_b'>": {
+        "severity": "major|moderate",
+        "effect": "what the combination may cause",
+        "guidance": "what the user should do"
+      }
+    },
+    "normalization": "Pair keys use lowercase canonical ingredient names separated by '+'.",
+    "interaction_count": 95,
+    "alias_count": 69
   },
   "interactions": {
-    "ibuprofen+warfarin": {
+    "acetaminophen+warfarin": {
+      "severity": "moderate",
+      "effect": "Repeated or high-dose acetaminophen use can increase anticoagulant effect and bleeding risk in some patients taking warfarin.",
+      "guidance": "Use only as directed and tell the anticoagulation team about regular or high-dose use; INR monitoring may be needed."
+    },
+    "albuterol+propranolol": {
       "severity": "major",
-      "effect": "NSAIDs like ibuprofen can increase the anticoagulant effect of warfarin and irritate the stomach lining, raising the risk of serious bleeding.",
-      "guidance": "Do not take ibuprofen while on warfarin without explicit direction from the prescribing clinician; prefer a pharmacist-approved alternative for pain."
+      "effect": "Nonselective beta-blockers can reduce albuterol's bronchodilator effect and may provoke bronchospasm.",
+      "guidance": "Avoid routine combination unless specifically directed by a clinician, especially in asthma."
+    },
+    "allopurinol+warfarin": {
+      "severity": "moderate",
+      "effect": "Allopurinol can increase anticoagulant effect in some warfarin users.",
+      "guidance": "Notify the anticoagulation team when therapy changes and follow INR monitoring instructions."
+    },
+    "alprazolam+morphine": {
+      "severity": "major",
+      "effect": "Benzodiazepines and opioids can cause profound sedation and respiratory depression.",
+      "guidance": "Use together only when specifically prescribed and monitored; seek emergency help for slowed breathing or inability to wake."
+    },
+    "amiodarone+digoxin": {
+      "severity": "major",
+      "effect": "Amiodarone can substantially increase digoxin concentrations and the risk of digoxin toxicity and arrhythmias.",
+      "guidance": "Use only with clinician supervision and appropriate digoxin-level and clinical monitoring."
+    },
+    "amiodarone+simvastatin": {
+      "severity": "major",
+      "effect": "Amiodarone increases simvastatin exposure, raising the risk of myopathy and rhabdomyolysis.",
+      "guidance": "Use only within recommended dose limits and ask the prescriber about alternatives if appropriate."
+    },
+    "amiodarone+warfarin": {
+      "severity": "major",
+      "effect": "Amiodarone can increase warfarin exposure and anticoagulant effect, increasing bleeding risk.",
+      "guidance": "Notify the anticoagulation team; INR monitoring and warfarin dose adjustment may be required."
+    },
+    "amitriptyline+fluoxetine": {
+      "severity": "major",
+      "effect": "Fluoxetine can increase amitriptyline exposure and combined serotonergic effects can increase toxicity.",
+      "guidance": "Use only with prescriber supervision and dose/side-effect monitoring."
+    },
+    "amitriptyline+tramadol": {
+      "severity": "major",
+      "effect": "Both increase serotonergic activity and can lower the seizure threshold.",
+      "guidance": "Use only under clinician supervision; seek urgent care for serotonin-toxicity symptoms or seizures."
+    },
+    "amlodipine+simvastatin": {
+      "severity": "moderate",
+      "effect": "Amlodipine can increase simvastatin exposure and the risk of statin-associated muscle toxicity.",
+      "guidance": "Stay within the recommended simvastatin dose when combined and follow prescriber or pharmacist guidance."
+    },
+    "aspirin+ibuprofen": {
+      "severity": "moderate",
+      "effect": "Both can increase gastrointestinal injury and bleeding risk; ibuprofen may also interfere with aspirin's antiplatelet effect depending on timing.",
+      "guidance": "Avoid routine combined use unless directed by a clinician; ask about safer pain-relief options."
     },
     "aspirin+warfarin": {
       "severity": "major",
-      "effect": "Combining two antithrombotic agents substantially increases the risk of bleeding, including gastrointestinal and intracranial bleeding.",
-      "guidance": "Only use together under close medical supervision with INR monitoring."
+      "effect": "Combined antithrombotic effects substantially increase the risk of serious bleeding.",
+      "guidance": "Use together only when specifically prescribed with appropriate clinical monitoring."
+    },
+    "atenolol+verapamil": {
+      "severity": "major",
+      "effect": "Both slow heart rate and cardiac conduction and can cause excessive bradycardia, hypotension, or heart block.",
+      "guidance": "Use only under clinician supervision with appropriate heart-rate and blood-pressure monitoring."
+    },
+    "atorvastatin+clarithromycin": {
+      "severity": "major",
+      "effect": "Clarithromycin inhibits CYP3A4 and can increase atorvastatin exposure and the risk of myopathy and rhabdomyolysis.",
+      "guidance": "Contact the prescriber or pharmacist before combining; an alternative antibiotic or temporary statin interruption may be appropriate."
+    },
+    "atorvastatin+itraconazole": {
+      "severity": "major",
+      "effect": "Itraconazole strongly inhibits CYP3A4 and can markedly increase atorvastatin exposure and muscle-toxicity risk.",
+      "guidance": "Avoid or use an alternative regimen unless specifically managed by the prescriber."
+    },
+    "azithromycin+warfarin": {
+      "severity": "moderate",
+      "effect": "Azithromycin can alter anticoagulation response and increase bleeding risk in some warfarin users.",
+      "guidance": "Notify the anticoagulation team and follow INR monitoring instructions."
+    },
+    "carbamazepine+warfarin": {
+      "severity": "major",
+      "effect": "Carbamazepine induces metabolism of warfarin and can reduce anticoagulant effect.",
+      "guidance": "Use only with close INR monitoring and clinician-directed dose adjustment."
+    },
+    "ciprofloxacin+warfarin": {
+      "severity": "moderate",
+      "effect": "Ciprofloxacin can alter warfarin response and increase anticoagulation and bleeding risk in some patients.",
+      "guidance": "Tell the anticoagulation team when ciprofloxacin is started or stopped and follow INR monitoring instructions."
+    },
+    "clarithromycin+colchicine": {
+      "severity": "major",
+      "effect": "Clarithromycin can markedly increase colchicine exposure and cause severe or fatal colchicine toxicity.",
+      "guidance": "Avoid the combination unless specifically managed by a clinician; alternative treatment is often preferred."
+    },
+    "clarithromycin+digoxin": {
+      "severity": "major",
+      "effect": "Clarithromycin can increase digoxin exposure and toxicity.",
+      "guidance": "Use only with clinician supervision; monitor for digoxin toxicity and consider level monitoring."
     },
     "clarithromycin+simvastatin": {
       "severity": "major",
-      "effect": "Clarithromycin inhibits CYP3A4, sharply raising simvastatin levels and increasing the risk of muscle damage (myopathy, rhabdomyolysis).",
-      "guidance": "Ask the prescriber to pause simvastatin or switch antibiotics/statin for the course of treatment."
+      "effect": "Clarithromycin strongly inhibits CYP3A4 and can sharply increase simvastatin levels, causing myopathy or rhabdomyolysis.",
+      "guidance": "Do not combine without prescriber direction; simvastatin is generally withheld or an alternative selected during treatment."
     },
-    "lisinopril+potassium": {
+    "clonazepam+oxycodone": {
+      "severity": "major",
+      "effect": "Benzodiazepines and opioids can cause profound sedation and respiratory depression.",
+      "guidance": "Use together only when specifically prescribed and monitored; seek emergency help for slowed breathing or inability to wake."
+    },
+    "clopidogrel+omeprazole": {
       "severity": "moderate",
-      "effect": "ACE inhibitors reduce potassium excretion; supplements or salt substitutes high in potassium can push levels dangerously high (hyperkalemia).",
-      "guidance": "Avoid potassium supplements and salt substitutes unless blood levels are being monitored."
+      "effect": "Omeprazole can inhibit CYP2C19 and may reduce activation and antiplatelet effect of clopidogrel.",
+      "guidance": "Ask the prescriber or pharmacist whether another acid-suppressing medicine is preferable."
+    },
+    "clopidogrel+warfarin": {
+      "severity": "major",
+      "effect": "Both impair hemostasis through different mechanisms, substantially increasing bleeding risk.",
+      "guidance": "Use only when specifically indicated with close clinical monitoring."
+    },
+    "cyclobenzaprine+tramadol": {
+      "severity": "major",
+      "effect": "Both can increase central nervous system depression and serotonergic toxicity, including serotonin syndrome.",
+      "guidance": "Use only under clinician direction; seek urgent care for severe sedation, agitation, tremor, fever, or muscle rigidity."
+    },
+    "cyclosporine+simvastatin": {
+      "severity": "major",
+      "effect": "Cyclosporine can markedly increase simvastatin exposure and the risk of myopathy and rhabdomyolysis.",
+      "guidance": "Avoid routine combination and use a transplant-prescriber-approved statin strategy."
+    },
+    "diazepam+morphine": {
+      "severity": "major",
+      "effect": "Benzodiazepines and opioids can cause profound sedation and respiratory depression, coma, and death.",
+      "guidance": "Use together only when specifically prescribed and monitored; seek emergency help for slowed breathing or inability to wake."
+    },
+    "digoxin+furosemide": {
+      "severity": "moderate",
+      "effect": "Furosemide can lower potassium and magnesium, increasing susceptibility to digoxin toxicity and arrhythmias.",
+      "guidance": "Monitor electrolytes, kidney function, and symptoms as directed."
+    },
+    "digoxin+verapamil": {
+      "severity": "major",
+      "effect": "Verapamil can increase digoxin concentrations and both can slow cardiac conduction.",
+      "guidance": "Use only under clinician supervision with appropriate heart-rate and digoxin monitoring."
+    },
+    "diltiazem+metoprolol": {
+      "severity": "major",
+      "effect": "Both slow cardiac conduction and heart rate, potentially causing bradycardia, hypotension, or heart block.",
+      "guidance": "Use only with clinician supervision and heart-rate and blood-pressure monitoring."
+    },
+    "diltiazem+simvastatin": {
+      "severity": "major",
+      "effect": "Diltiazem inhibits CYP3A4 and increases simvastatin exposure and muscle-toxicity risk.",
+      "guidance": "Follow recommended dose limits and ask the prescriber about an alternative statin if appropriate."
+    },
+    "doxycycline+warfarin": {
+      "severity": "moderate",
+      "effect": "Doxycycline can increase anticoagulant response in some patients taking warfarin.",
+      "guidance": "Notify the anticoagulation team and follow INR monitoring instructions."
+    },
+    "erythromycin+simvastatin": {
+      "severity": "major",
+      "effect": "Erythromycin inhibits CYP3A4 and can markedly increase simvastatin exposure and rhabdomyolysis risk.",
+      "guidance": "Avoid routine combination unless specifically managed; an alternative antibiotic or statin strategy may be needed."
+    },
+    "erythromycin+warfarin": {
+      "severity": "moderate",
+      "effect": "Erythromycin can increase anticoagulant effect and bleeding risk in some warfarin users.",
+      "guidance": "Notify the anticoagulation team and follow INR monitoring instructions."
+    },
+    "escitalopram+tramadol": {
+      "severity": "major",
+      "effect": "Both increase serotonergic activity and can increase serotonin syndrome and seizure risk.",
+      "guidance": "Use only under clinician supervision; seek urgent care for agitation, tremor, sweating, fever, confusion, or rigidity."
+    },
+    "fluconazole+phenytoin": {
+      "severity": "major",
+      "effect": "Fluconazole can increase phenytoin concentrations and toxicity.",
+      "guidance": "Use only with clinician supervision and therapeutic-drug monitoring when appropriate."
+    },
+    "fluconazole+warfarin": {
+      "severity": "major",
+      "effect": "Fluconazole inhibits warfarin metabolism and can markedly increase anticoagulant effect and bleeding risk.",
+      "guidance": "Contact the anticoagulation team when treatment starts or stops; increased INR monitoring may be required."
+    },
+    "fluoxetine+linezolid": {
+      "severity": "major",
+      "effect": "Linezolid has monoamine oxidase inhibitor activity and can combine with serotonergic antidepressants to cause serotonin syndrome.",
+      "guidance": "Avoid unless specifically managed by a clinician; seek urgent care for agitation, fever, tremor, confusion, or muscle rigidity."
     },
     "fluoxetine+tramadol": {
       "severity": "major",
-      "effect": "Both raise serotonergic tone; combined use can cause serotonin syndrome (agitation, tremor, fever, rapid heart rate) and lowers the seizure threshold.",
-      "guidance": "Seek immediate medical advice if agitation, tremor, sweating, or fever occur; tell every prescriber you take both."
+      "effect": "Both increase serotonergic activity and can cause serotonin syndrome; combined use also increases seizure risk.",
+      "guidance": "Avoid unless specifically prescribed; seek urgent care for agitation, tremor, sweating, fever, confusion, or rigidity."
+    },
+    "fluoxetine+warfarin": {
+      "severity": "moderate",
+      "effect": "Fluoxetine can increase bleeding risk through platelet effects and may alter warfarin response.",
+      "guidance": "Tell the anticoagulation prescriber and follow INR and bleeding monitoring instructions."
+    },
+    "fluvoxamine+theophylline": {
+      "severity": "major",
+      "effect": "Fluvoxamine can substantially reduce theophylline metabolism and increase theophylline concentrations and toxicity.",
+      "guidance": "Avoid unless specifically managed with dose adjustment and therapeutic-drug monitoring."
+    },
+    "gabapentin+morphine": {
+      "severity": "major",
+      "effect": "Both can depress the central nervous system and respiratory system, increasing risk of severe sedation and respiratory depression.",
+      "guidance": "Use only as directed and avoid other sedatives; seek emergency help for slowed breathing or inability to wake."
+    },
+    "glipizide+insulin": {
+      "severity": "major",
+      "effect": "Both lower blood glucose and can cause additive or severe hypoglycemia.",
+      "guidance": "Use only according to the diabetes treatment plan and monitor glucose as instructed."
+    },
+    "hydrochlorothiazide+lithium": {
+      "severity": "major",
+      "effect": "Thiazide diuretics reduce renal lithium clearance and can cause lithium accumulation and toxicity.",
+      "guidance": "Use only with medical supervision and appropriate lithium and kidney-function monitoring."
+    },
+    "ibuprofen+lisinopril": {
+      "severity": "moderate",
+      "effect": "NSAIDs can reduce the antihypertensive effect of lisinopril and increase kidney-injury risk, especially with dehydration or kidney disease.",
+      "guidance": "Avoid frequent NSAID use unless approved; follow blood-pressure and kidney-function monitoring."
+    },
+    "ibuprofen+lithium": {
+      "severity": "major",
+      "effect": "NSAIDs can reduce renal lithium clearance and increase lithium concentrations and toxicity risk.",
+      "guidance": "Ask a clinician or pharmacist before using ibuprofen; lithium levels may need monitoring."
+    },
+    "ibuprofen+warfarin": {
+      "severity": "major",
+      "effect": "NSAIDs increase bleeding risk with warfarin through gastrointestinal injury and platelet effects.",
+      "guidance": "Do not use without explicit clinician direction; ask about a safer analgesic."
+    },
+    "insulin+prednisone": {
+      "severity": "moderate",
+      "effect": "Prednisone can raise blood glucose and reduce the apparent glucose-lowering effect of insulin.",
+      "guidance": "Monitor glucose more closely during steroid treatment and follow diabetes-team instructions."
+    },
+    "ketoconazole+simvastatin": {
+      "severity": "major",
+      "effect": "Ketoconazole strongly inhibits CYP3A4 and can markedly increase simvastatin exposure and rhabdomyolysis risk.",
+      "guidance": "Avoid the combination unless specifically managed by the prescriber."
+    },
+    "ketoconazole+tamsulosin": {
+      "severity": "moderate",
+      "effect": "Strong CYP3A4 inhibition can increase tamsulosin exposure and the risk of dizziness or hypotension.",
+      "guidance": "Use only with prescriber or pharmacist guidance."
+    },
+    "linezolid+sertraline": {
+      "severity": "major",
+      "effect": "Linezolid has MAO-inhibiting activity and can cause serotonin syndrome with serotonergic antidepressants.",
+      "guidance": "Avoid unless specifically managed by a clinician; seek urgent care for serotonin-toxicity symptoms."
+    },
+    "lisinopril+potassium": {
+      "severity": "moderate",
+      "effect": "ACE inhibition reduces potassium excretion; supplements and potassium-containing salt substitutes can cause hyperkalemia.",
+      "guidance": "Avoid potassium supplementation unless specifically approved and monitored."
+    },
+    "lisinopril+spironolactone": {
+      "severity": "major",
+      "effect": "Both reduce potassium excretion and can cause severe hyperkalemia and dangerous arrhythmias.",
+      "guidance": "Use only with clinician supervision and potassium and kidney-function monitoring."
+    },
+    "lithium+naproxen": {
+      "severity": "major",
+      "effect": "Naproxen can reduce lithium clearance and increase lithium concentrations and toxicity.",
+      "guidance": "Ask a clinician or pharmacist before use; lithium monitoring may be required."
+    },
+    "lithium+sertraline": {
+      "severity": "moderate",
+      "effect": "Combined serotonergic effects can increase the risk of serotonin toxicity and tremor or other adverse effects.",
+      "guidance": "Use under prescriber supervision and seek medical advice for agitation, sweating, tremor, fever, confusion, or rigidity."
+    },
+    "lorazepam+morphine": {
+      "severity": "major",
+      "effect": "Benzodiazepines and opioids can cause profound sedation and respiratory depression.",
+      "guidance": "Use together only when prescribed and monitored; seek emergency help for slowed breathing or inability to wake."
     },
     "metformin+prednisone": {
       "severity": "moderate",
-      "effect": "Corticosteroids can raise blood glucose and counteract metformin's effect, worsening glycemic control.",
-      "guidance": "Monitor blood glucose closely during steroid courses and inform the diabetes care team."
+      "effect": "Corticosteroids can raise blood glucose and counteract metformin's glucose-lowering effect.",
+      "guidance": "Monitor glucose closely during steroid courses and inform the diabetes care team."
+    },
+    "methotrexate+trimethoprim": {
+      "severity": "major",
+      "effect": "Trimethoprim can increase methotrexate toxicity and both can contribute to folate-related bone-marrow suppression.",
+      "guidance": "Avoid unless specifically managed by the prescriber; report fever, sore throat, bruising, or severe weakness promptly."
+    },
+    "metoprolol+verapamil": {
+      "severity": "major",
+      "effect": "Both slow cardiac conduction and heart rate and can cause severe bradycardia, hypotension, or heart block.",
+      "guidance": "Use only under clinician supervision with heart-rate and blood-pressure monitoring."
+    },
+    "metronidazole+warfarin": {
+      "severity": "major",
+      "effect": "Metronidazole can increase warfarin's anticoagulant effect and bleeding risk.",
+      "guidance": "Notify the anticoagulation team; INR monitoring may need to increase."
+    },
+    "mirtazapine+tramadol": {
+      "severity": "moderate",
+      "effect": "Combined serotonergic effects may increase serotonin-toxicity risk and both can contribute to CNS effects.",
+      "guidance": "Use under clinician supervision and seek medical advice for agitation, tremor, sweating, fever, or confusion."
+    },
+    "morphine+zolpidem": {
+      "severity": "major",
+      "effect": "Both depress the central nervous system and can increase profound sedation and respiratory depression.",
+      "guidance": "Avoid combined use unless specifically prescribed and monitored; seek emergency help for abnormal or slowed breathing."
+    },
+    "naproxen+lisinopril": {
+      "severity": "moderate",
+      "effect": "NSAIDs can reduce lisinopril's antihypertensive effect and increase kidney-injury risk.",
+      "guidance": "Avoid frequent use without clinician approval, especially with dehydration or kidney disease."
+    },
+    "naproxen+warfarin": {
+      "severity": "major",
+      "effect": "NSAIDs increase gastrointestinal injury and bleeding risk when combined with warfarin.",
+      "guidance": "Avoid unless specifically directed; ask about a safer analgesic."
+    },
+    "nitroglycerin+sildenafil": {
+      "severity": "major",
+      "effect": "Nitrates and sildenafil can cause profound, potentially life-threatening hypotension when combined.",
+      "guidance": "Never combine without explicit emergency-medical direction."
+    },
+    "omeprazole+clopidogrel": {
+      "severity": "moderate",
+      "effect": "Omeprazole can inhibit CYP2C19 and reduce activation and antiplatelet activity of clopidogrel.",
+      "guidance": "Ask the prescriber or pharmacist about an alternative acid-suppressing medicine."
+    },
+    "ondansetron+tramadol": {
+      "severity": "moderate",
+      "effect": "Both can affect serotonergic signaling and may contribute to serotonin toxicity; ondansetron and tramadol may also increase concern for QT or seizure-related effects depending on context.",
+      "guidance": "Use under clinician direction and seek medical advice for severe agitation, tremor, fever, fainting, or abnormal heartbeat."
+    },
+    "oxycodone+gabapentin": {
+      "severity": "major",
+      "effect": "Combined opioid and gabapentinoid effects can increase sedation and respiratory depression.",
+      "guidance": "Use only as prescribed, avoid additional sedatives, and seek emergency help for severe sleepiness or slowed breathing."
+    },
+    "oxycodone+lorazepam": {
+      "severity": "major",
+      "effect": "Both depress the central nervous system and respiratory drive, increasing the risk of profound sedation and respiratory depression.",
+      "guidance": "Use together only when specifically prescribed and monitored; seek emergency help for slowed breathing or inability to wake."
+    },
+    "paroxetine+tramadol": {
+      "severity": "major",
+      "effect": "Both increase serotonergic activity and can increase serotonin syndrome and seizure risk.",
+      "guidance": "Avoid unless specifically directed; seek urgent care for agitation, tremor, sweating, fever, confusion, or rigidity."
+    },
+    "phenelzine+sertraline": {
+      "severity": "major",
+      "effect": "MAO inhibitors combined with SSRIs can cause life-threatening serotonin syndrome.",
+      "guidance": "Do not combine unless specifically managed according to required washout and prescribing guidance."
+    },
+    "phenytoin+warfarin": {
+      "severity": "major",
+      "effect": "Phenytoin can produce complex changes in warfarin response and anticoagulation, including altered INR.",
+      "guidance": "Use only with close anticoagulation monitoring, especially when starting or stopping either medicine."
+    },
+    "prednisone+warfarin": {
+      "severity": "moderate",
+      "effect": "Systemic corticosteroids can alter anticoagulation response and may increase bleeding risk in some patients taking warfarin.",
+      "guidance": "Notify the anticoagulation team when starting or stopping prednisone and follow INR monitoring instructions."
+    },
+    "propranolol+insulin": {
+      "severity": "moderate",
+      "effect": "Beta-blockers can mask warning symptoms of hypoglycemia such as tremor and rapid heartbeat.",
+      "guidance": "Monitor blood glucose carefully and know that sweating may remain a warning sign."
+    },
+    "propranolol+verapamil": {
+      "severity": "major",
+      "effect": "Both slow heart rate and cardiac conduction and may cause severe bradycardia, hypotension, or heart block.",
+      "guidance": "Use only under clinician supervision with appropriate monitoring."
+    },
+    "rifampin+prednisone": {
+      "severity": "moderate",
+      "effect": "Rifampin can increase corticosteroid metabolism and reduce systemic corticosteroid exposure.",
+      "guidance": "Tell the prescriber; corticosteroid dosing may require adjustment."
+    },
+    "rifampin+warfarin": {
+      "severity": "major",
+      "effect": "Rifampin strongly induces drug-metabolizing enzymes and can substantially reduce warfarin exposure and anticoagulant effect.",
+      "guidance": "Use only with close anticoagulation supervision and frequent INR monitoring."
+    },
+    "ritonavir+midazolam": {
+      "severity": "major",
+      "effect": "Ritonavir can greatly increase midazolam exposure and cause prolonged or profound sedation and respiratory depression.",
+      "guidance": "Avoid oral midazolam with strong CYP3A inhibitors; parenteral use requires specialist monitoring."
+    },
+    "ritonavir+simvastatin": {
+      "severity": "major",
+      "effect": "Ritonavir strongly inhibits CYP3A4 and can markedly increase simvastatin exposure and rhabdomyolysis risk.",
+      "guidance": "Do not combine without specialist direction; simvastatin is generally contraindicated with strong CYP3A inhibitors."
+    },
+    "ritonavir+triazolam": {
+      "severity": "major",
+      "effect": "Ritonavir can markedly increase triazolam exposure and cause prolonged, severe sedation and respiratory depression.",
+      "guidance": "Do not combine."
+    },
+    "rivaroxaban+ketoconazole": {
+      "severity": "major",
+      "effect": "Ketoconazole inhibits CYP3A4 and P-glycoprotein and can increase rivaroxaban exposure and serious bleeding risk.",
+      "guidance": "Avoid unless specifically approved by the prescriber; consider an alternative regimen."
+    },
+    "sertraline+tramadol": {
+      "severity": "major",
+      "effect": "Both increase serotonergic activity and can cause serotonin syndrome; tramadol also increases seizure risk.",
+      "guidance": "Use only under clinician supervision; seek urgent care for agitation, tremor, sweating, fever, confusion, or rigidity."
+    },
+    "sildenafil+tamsulosin": {
+      "severity": "moderate",
+      "effect": "Both can lower blood pressure and may cause symptomatic hypotension, dizziness, or fainting.",
+      "guidance": "Use only as directed and tell the prescriber about all blood-pressure-lowering medicines."
+    },
+    "simvastatin+warfarin": {
+      "severity": "moderate",
+      "effect": "Changes in simvastatin therapy can alter warfarin response in some patients.",
+      "guidance": "Tell the anticoagulation team when simvastatin is started, stopped, or substantially changed."
+    },
+    "sotalol+hydroxyzine": {
+      "severity": "major",
+      "effect": "Both can prolong the QT interval and increase the risk of torsades de pointes and dangerous arrhythmias.",
+      "guidance": "Avoid unless specifically approved by a clinician; seek urgent care for fainting or sustained palpitations."
+    },
+    "spironolactone+potassium": {
+      "severity": "major",
+      "effect": "Spironolactone reduces potassium excretion and added potassium can cause severe hyperkalemia and cardiac arrhythmias.",
+      "guidance": "Do not use potassium supplements or potassium-containing salt substitutes unless specifically prescribed and monitored."
+    },
+    "spironolactone+trimethoprim": {
+      "severity": "major",
+      "effect": "Both can increase potassium levels and the combination can cause severe hyperkalemia.",
+      "guidance": "Avoid unless specifically managed by a clinician with potassium and kidney-function monitoring."
+    },
+    "sulfamethoxazole+warfarin": {
+      "severity": "major",
+      "effect": "Trimethoprim-sulfamethoxazole can substantially increase warfarin effect and bleeding risk.",
+      "guidance": "Contact the anticoagulation team when this antibiotic is started or stopped; increased INR monitoring may be required."
+    },
+    "tadalafil+nitroglycerin": {
+      "severity": "major",
+      "effect": "Tadalafil and nitrates can cause profound, potentially life-threatening hypotension when combined.",
+      "guidance": "Never combine unless specifically directed by emergency medical professionals."
+    },
+    "tamsulosin+warfarin": {
+      "severity": "moderate",
+      "effect": "Tamsulosin and warfarin can be used together in some patients, but dizziness or bleeding concerns require clinical context and monitoring.",
+      "guidance": "Follow the prescriber's instructions and report unusual bleeding or severe dizziness."
+    },
+    "tramadol+warfarin": {
+      "severity": "moderate",
+      "effect": "Tramadol has been associated with altered anticoagulation response and may increase bleeding risk in some warfarin users.",
+      "guidance": "Tell the anticoagulation team before starting tramadol and follow INR monitoring instructions."
+    },
+    "venlafaxine+tramadol": {
+      "severity": "major",
+      "effect": "Both increase serotonergic activity and can increase serotonin syndrome and seizure risk.",
+      "guidance": "Avoid unless specifically directed; seek urgent care for serotonin-toxicity symptoms."
+    },
+    "verapamil+simvastatin": {
+      "severity": "major",
+      "effect": "Verapamil inhibits CYP3A4 and can substantially increase simvastatin exposure and muscle-toxicity risk.",
+      "guidance": "Use only within recommended dose limits and ask about an alternative statin if appropriate."
+    },
+    "warfarin+fluconazole": {
+      "severity": "major",
+      "effect": "Fluconazole inhibits warfarin metabolism and can markedly increase anticoagulation and bleeding risk.",
+      "guidance": "Notify the anticoagulation team and follow increased INR monitoring."
+    },
+    "warfarin+vitamin_k": {
+      "severity": "moderate",
+      "effect": "Sudden increases in vitamin K intake can reduce warfarin's anticoagulant effect and lower the INR.",
+      "guidance": "Keep dietary vitamin K intake reasonably consistent and consult the anticoagulation team before vitamin K supplements."
     }
   },
   "aliases": {
-    "_meta": "brand/common name -> canonical generic name. Every value must be a drug that appears in an interaction key above; aliases pointing at unknown drugs are ignored at load time.",
+    "acetaminophen": "acetaminophen",
     "advil": "ibuprofen",
-    "motrin": "ibuprofen",
-    "nuprin": "ibuprofen",
-    "calprofen": "ibuprofen",
-    "coumadin": "warfarin",
-    "jantoven": "warfarin",
+    "aldactone": "spironolactone",
+    "aleve": "naproxen",
+    "ambien": "zolpidem",
+    "ativan": "lorazepam",
+    "bactrim": "sulfamethoxazole",
     "bayer": "aspirin",
-    "bufferin": "aspirin",
-    "ecotrin": "aspirin",
-    "ascriptin": "aspirin",
     "biaxin": "clarithromycin",
-    "zocor": "simvastatin",
-    "prozac": "fluoxetine",
-    "ultram": "tramadol",
-    "prinivil": "lisinopril",
-    "zestril": "lisinopril",
-    "glucophage": "metformin",
+    "bufferin": "aspirin",
+    "calan": "verapamil",
+    "cardizem": "diltiazem",
+    "cialis": "tadalafil",
+    "colcrys": "colchicine",
+    "cordarone": "amiodarone",
+    "coumadin": "warfarin",
     "deltasone": "prednisone",
-    "klor-con": "potassium",
-    "k-dur": "potassium"
+    "diflucan": "fluconazole",
+    "dilantin": "phenytoin",
+    "ecotrin": "aspirin",
+    "effexor": "venlafaxine",
+    "flagyl": "metronidazole",
+    "flomax": "tamsulosin",
+    "glucophage": "metformin",
+    "glucotrol": "glipizide",
+    "inderal": "propranolol",
+    "jantoven": "warfarin",
+    "klonopin": "clonazepam",
+    "lanoxin": "digoxin",
+    "lasix": "furosemide",
+    "lexapro": "escitalopram",
+    "lipitor": "atorvastatin",
+    "lithobid": "lithium",
+    "lopressor": "metoprolol",
+    "motrin": "ibuprofen",
+    "ms contin": "morphine",
+    "naprosyn": "naproxen",
+    "neurontin": "gabapentin",
+    "nitro-bid": "nitroglycerin",
+    "nitrostat": "nitroglycerin",
+    "nizoral": "ketoconazole",
+    "nuprin": "ibuprofen",
+    "oxycontin": "oxycodone",
+    "paracetamol": "acetaminophen",
+    "paxil": "paroxetine",
+    "plavix": "clopidogrel",
+    "prilosec": "omeprazole",
+    "prinivil": "lisinopril",
+    "prozac": "fluoxetine",
+    "remeron": "mirtazapine",
+    "rifadin": "rifampin",
+    "rifampicin": "rifampin",
+    "roxicodone": "oxycodone",
+    "septra": "sulfamethoxazole",
+    "tegretol": "carbamazepine",
+    "tenormin": "atenolol",
+    "toprol-xl": "metoprolol",
+    "trexall": "methotrexate",
+    "tylenol": "acetaminophen",
+    "ultram": "tramadol",
+    "verelan": "verapamil",
+    "viagra": "sildenafil",
+    "xarelto": "rivaroxaban",
+    "zestril": "lisinopril",
+    "zithromax": "azithromycin",
+    "zocor": "simvastatin",
+    "zoloft": "sertraline",
+    "zyloprim": "allopurinol",
+    "zyvox": "linezolid"
   }
 }

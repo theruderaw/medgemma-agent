@@ -5,10 +5,9 @@ import {
   fetchAuditEvents,
   fetchSessionHistory,
   pollUntilDone,
-  resetSession,
   watchJob,
 } from '../lib/api';
-import type { AttachedImage, AuditEvent, ChatResponse } from '../types';
+import type { AttachedImage, AuditEvent, ChatResponse, StructuredPayload } from '../types';
 
 // ---------------------------------------------------------------------------
 // ChatMessage: the UI's view of one bubble. Wire types stay in types.ts.
@@ -31,6 +30,9 @@ export interface ChatMessage {
   /** MedGemma clinical note, accumulated live from specialist_token events. */
   specialistNote?: string;
   specialistStreaming?: boolean;
+  /** Structured artifact (prescription transcription) for this message —
+   * arrives via its own SSE frame, the final result, or history restore. */
+  structured?: StructuredPayload | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -53,6 +55,7 @@ type ConversationAction =
   | { type: 'stream_token'; messageId: number; delta: string }
   | { type: 'specialist_token'; messageId: number; delta: string }
   | { type: 'pipeline_event'; messageId: number; event: AuditEvent }
+  | { type: 'structured_payload'; messageId: number; payload: StructuredPayload }
   | { type: 'session_known'; sessionId: string }
   | { type: 'history_loaded'; messages: ChatMessage[] }
   | { type: 'history_missing' }
@@ -120,6 +123,15 @@ function reducer(state: ConversationState, action: ConversationAction): Conversa
         })),
       };
 
+    case 'structured_payload':
+      return {
+        ...state,
+        messages: patchMessage(state, action.messageId, (m) => ({
+          ...m,
+          structured: action.payload,
+        })),
+      };
+
     case 'session_known':
       return state.sessionId ? state : { ...state, sessionId: action.sessionId };
 
@@ -129,7 +141,7 @@ function reducer(state: ConversationState, action: ConversationAction): Conversa
       return { ...state, messages: action.messages };
 
     case 'history_missing':
-      // The stored session expired server-side — start clean.
+      // The stored session is unknown server-side — start clean.
       return { ...state, sessionId: null, messages: [] };
 
     case 'turn_success': {
@@ -146,6 +158,7 @@ function reducer(state: ConversationState, action: ConversationAction): Conversa
         text: action.data.response,
         urgency: action.data.urgency,
         events: action.data.events ?? [],
+        structured: action.data.structured ?? base.structured ?? null,
         turnId:
           base.turnId ??
           action.data.events?.find((e) => e.turn_id)?.turn_id ??
@@ -257,6 +270,7 @@ export function useConversation() {
         role: m.role,
         text: m.content,
         turnId: m.turn_id ?? null,
+        structured: m.structured ?? null,
         events: m.turn_id ? byTurn.get(m.turn_id) : undefined,
       }));
       if (messages.length) dispatch({ type: 'history_loaded', messages });
@@ -273,7 +287,7 @@ export function useConversation() {
   }, []);
 
   // Restore the persisted conversation once on mount when a stored session
-  // exists (page refresh / revisit). A 404 means it expired server-side.
+  // exists (page refresh / revisit). A 404 means it is unknown server-side.
   const restored = useRef(false);
   useEffect(() => {
     if (restored.current || !state.sessionId || state.busy) return;
@@ -339,6 +353,8 @@ export function useConversation() {
             dispatch({ type: 'specialist_token', messageId: thinking.id, delta }),
           onPipeline: (event) =>
             dispatch({ type: 'pipeline_event', messageId: thinking.id, event }),
+          onStructured: (payload) =>
+            dispatch({ type: 'structured_payload', messageId: thinking.id, payload }),
           onResult: (data) => {
             close();
             dispatch({ type: 'turn_success', data, thinkingId: thinking.id });
@@ -364,18 +380,15 @@ export function useConversation() {
     [state.busy, state.sessionId],
   );
 
-  const newChat = useCallback(async () => {
+  /**
+   * Start a fresh view without touching the server: the previous conversation
+   * stays persisted and remains selectable from the all-chats menu.
+   */
+  const newChat = useCallback(() => {
     closeWatcher.current?.();
     closeWatcher.current = null;
-    if (state.sessionId) {
-      try {
-        await resetSession(state.sessionId);
-      } catch {
-        /* best-effort reset */
-      }
-    }
     dispatch({ type: 'new_chat' });
-  }, [state.sessionId]);
+  }, []);
 
   /** Jump to another existing conversation from the recent-chats menu. */
   const switchSession = useCallback(

@@ -23,10 +23,10 @@ export default function MessageList({ messages, expandedSteps, onToggleStep }: P
     return (
       <main className="flex flex-1 items-center justify-center p-6">
         <div className="max-w-sm text-center">
-          <p className="m-0 text-sm text-slate-400">
+          <p className="m-0 text-sm text-neutral-500 dark:text-neutral-400">
             Describe symptoms, attach a photo, or ask any health question.
           </p>
-          <p className="m-0 mt-2 text-xs text-slate-600">
+          <p className="m-0 mt-2 text-xs text-neutral-600 dark:text-neutral-300">
             Red-flag phrases bypass the models entirely and page you immediately.
           </p>
         </div>

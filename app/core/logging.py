@@ -1,15 +1,22 @@
 """Structured logging setup.
 
-The whole app logs through structlog. Every log line is emitted twice:
+The whole app logs through structlog. Every log line is emitted three times:
 
-- to the console, rendered human-readably (``structlog.dev.ConsoleRenderer``),
+- to the console, rendered human-readably (``structlog.dev.ConsoleRenderer``,
+  colored only on a real TTY),
+- to ``app/logs/app.log`` — the same human-readable rendering, always
+  color-free (rotating, 5 MB x 3 backups) — the durable copy of what the
+  terminal shows,
 - to ``app/logs/app.jsonl`` as one JSON object per line (rotating,
   5 MB x 3 backups) for machines and audit-oriented tooling.
 
 Uvicorn and Celery loggers are routed through the same stdlib formatter so
 framework noise lands alongside app logs as structured records. Context
 variables (``session_id``, ``turn_id``, ``job_id``, ...) are merged into every
-line via ``structlog.contextvars``.
+line via ``structlog.contextvars``. Audit events and session lifecycle
+transitions are mirrored into the same stream by their emitters
+(``app.audit.event``, ``app.sessions.*``), so ``app.jsonl`` alone reconstructs
+every transaction.
 
 Idempotent, so it is safe to call from both the API and worker entrypoints.
 """
@@ -21,10 +28,11 @@ from pathlib import Path
 import structlog
 
 LOGS_DIR = Path(__file__).resolve().parent.parent / "logs"
+TEXT_LOG_FILENAME = "app.log"
 JSON_LOG_FILENAME = "app.jsonl"
 
 _configured = False
-_handlers: tuple[logging.Handler, logging.Handler] | None = None
+_handlers: tuple[logging.Handler, ...] | None = None
 
 _PROCESSORS: list = [
     structlog.contextvars.merge_contextvars,
@@ -72,6 +80,22 @@ def _file_handler() -> logging.handlers.RotatingFileHandler:
     return handler
 
 
+def _text_file_handler() -> logging.handlers.RotatingFileHandler:
+    """Durable copy of the terminal stream, written to ``app.log``.
+
+    Always color-free (ANSI escapes would make the file unreadable), so it
+    uses a fresh ``ConsoleRenderer`` regardless of whether stdout is a TTY.
+    """
+    handler = logging.handlers.RotatingFileHandler(
+        LOGS_DIR / TEXT_LOG_FILENAME,
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    handler.setFormatter(_formatter(structlog.dev.ConsoleRenderer(colors=False)))
+    return handler
+
+
 def _console_handler() -> logging.StreamHandler:
     """Human-readable console output.
 
@@ -88,11 +112,11 @@ def _console_handler() -> logging.StreamHandler:
     return handler
 
 
-def _get_handlers() -> tuple[logging.Handler, logging.Handler]:
-    """Return the shared console + JSONL handlers (created once)."""
+def _get_handlers() -> tuple[logging.Handler, ...]:
+    """Return the shared console + app.log + JSONL handlers (created once)."""
     global _handlers
     if _handlers is None:
-        _handlers = (_console_handler(), _file_handler())
+        _handlers = (_console_handler(), _text_file_handler(), _file_handler())
     return _handlers
 
 

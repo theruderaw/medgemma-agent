@@ -36,6 +36,32 @@ SPECIALIST_FORMAT = {
 }
 
 
+# Prescription transcription contract: a medications map keyed by the
+# transcribed drug name. Unreadable fields are null, never guessed.
+PRESCRIPTION_MEDICATION_FORMAT = {
+    "type": "object",
+    "properties": {
+        "strength": {"type": ["string", "null"]},
+        "dose": {"type": ["string", "null"]},
+        "frequency": {"type": ["string", "null"]},
+        "duration": {"type": ["string", "null"]},
+        "instructions": {"type": ["string", "null"]},
+    },
+    "required": ["strength", "dose", "frequency", "duration", "instructions"],
+}
+
+PRESCRIPTION_FORMAT = {
+    "type": "object",
+    "properties": {
+        "medications": {
+            "type": "object",
+            "additionalProperties": PRESCRIPTION_MEDICATION_FORMAT,
+        },
+    },
+    "required": ["medications"],
+}
+
+
 TRIAGE_FORMAT = {
     "type": "object",
     "properties": {

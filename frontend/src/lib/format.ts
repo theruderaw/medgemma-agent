@@ -28,26 +28,26 @@ export interface UrgencyMeta {
 export const URGENCY: Record<Exclude<Urgency, null>, UrgencyMeta> = {
   emergency: {
     label: 'Emergency',
-    text: 'text-red-400',
-    dot: 'bg-red-500',
-    ring: 'ring-red-500/40',
+    text: 'text-neutral-900 dark:text-neutral-100',
+    dot: 'bg-neutral-900 dark:bg-neutral-100',
+    ring: 'ring-neutral-800/40 dark:ring-neutral-200/40',
   },
   urgent: {
     label: 'Urgent',
-    text: 'text-amber-400',
-    dot: 'bg-amber-400',
-    ring: 'ring-amber-400/40',
+    text: 'text-neutral-700 dark:text-neutral-300',
+    dot: 'bg-neutral-600 dark:bg-neutral-400',
+    ring: 'ring-neutral-500/40',
   },
   routine: {
     label: 'Routine',
-    text: 'text-accent-300',
-    dot: 'bg-accent-400',
-    ring: 'ring-accent-400/40',
+    text: 'text-neutral-500 dark:text-neutral-400',
+    dot: 'bg-neutral-400 dark:bg-neutral-500',
+    ring: 'ring-neutral-400/40',
   },
   self_care: {
     label: 'Self care',
-    text: 'text-emerald-400',
-    dot: 'bg-emerald-400',
-    ring: 'ring-emerald-400/40',
+    text: 'text-neutral-400 dark:text-neutral-500',
+    dot: 'bg-neutral-300 dark:bg-neutral-600',
+    ring: 'ring-neutral-300/40 dark:ring-neutral-600/40',
   },
 };

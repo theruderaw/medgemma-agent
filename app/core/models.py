@@ -24,6 +24,9 @@ class MessageRow(SQLModel, table=True):
     # Pipeline turn that produced this message — lets a restored conversation
     # re-join its audit-event timeline after a page reload.
     turn_id: str | None = None
+    # Structured specialist artifact attached to this assistant message
+    # (e.g. prescription transcription); NULL for plain messages.
+    structured: dict | None = Field(default=None, sa_column=Column(JSONB, nullable=True))
 
 
 class AuditEventRow(SQLModel, table=True):

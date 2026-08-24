@@ -3,12 +3,17 @@ import type { ReactNode } from 'react';
 type Tone = 'neutral' | 'accent' | 'active' | 'high' | 'safety' | 'muted';
 
 const TONES: Record<Tone, string> = {
-  neutral: 'border-ink-700 bg-ink-850 text-slate-300',
-  accent: 'border-accent-500/40 bg-accent-900/50 text-accent-300',
-  active: 'border-accent-400 bg-accent-900 text-accent-300',
-  high: 'border-amber-700 bg-amber-950/60 text-amber-300',
-  safety: 'border-red-800 bg-red-950/40 text-red-300',
-  muted: 'border-ink-800 bg-transparent text-slate-500',
+  neutral:
+    'border-neutral-300 bg-neutral-100 text-neutral-600 dark:border-neutral-700 dark:bg-neutral-800 dark:text-neutral-300',
+  accent:
+    'border-neutral-500/40 bg-neutral-100 text-neutral-700 dark:border-neutral-400/40 dark:bg-neutral-800/60 dark:text-neutral-300',
+  active:
+    'border-neutral-500 bg-neutral-200 text-neutral-900 dark:border-neutral-400 dark:bg-neutral-700 dark:text-neutral-100',
+  high: 'border-neutral-500/60 bg-neutral-200 text-neutral-800 dark:border-neutral-500/40 dark:bg-neutral-800 dark:text-neutral-300',
+  safety:
+    'border-neutral-900/60 bg-neutral-900 text-neutral-100 dark:border-neutral-100/60 dark:bg-neutral-100 dark:text-neutral-900',
+  muted:
+    'border-neutral-200 bg-transparent text-neutral-400 dark:border-neutral-800 dark:text-neutral-500',
 };
 
 interface Props {

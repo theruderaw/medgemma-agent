@@ -15,23 +15,19 @@ class PostgresSessionStore(SessionStore):
     Sessions and messages live in relational tables. Messages are append-only:
     once written they are never updated, and a fresh session row is created per
     session_id. History is retained in full (no trimming) so that audit and
-    evaluation can reconstruct complete conversations.
+    evaluation can reconstruct complete conversations, and old conversations
+    stay readable forever — no idle expiry, no implicit purge.
     """
 
     retains_full_history = True
 
-    def __init__(self, url: str, timeout_seconds: float) -> None:
+    def __init__(self, url: str) -> None:
         self.url = url
-        self.timeout_seconds = timeout_seconds
 
     async def get(self, session_id: str) -> Session | None:
         async with SessionLocal() as db:
             row = (await db.execute(select(SessionRow).where(SessionRow.session_id == session_id))).scalar_one_or_none()
             if row is None:
-                return None
-            if self._expired(row.last_activity):
-                await db.execute(delete(SessionRow).where(SessionRow.session_id == session_id))
-                await db.commit()
                 return None
 
             message_rows = (
@@ -43,7 +39,12 @@ class PostgresSessionStore(SessionStore):
             session = Session(
                 session_id=session_id,
                 messages=[
-                    {"role": r.role, "content": r.content, "turn_id": r.turn_id}
+                    {
+                        "role": r.role,
+                        "content": r.content,
+                        "turn_id": r.turn_id,
+                        **({"structured": r.structured} if r.structured else {}),
+                    }
                     for r in message_rows
                 ],
                 created_at=row.created_at,
@@ -78,6 +79,7 @@ class PostgresSessionStore(SessionStore):
                         content=message["content"],
                         created_at=now,
                         turn_id=message.get("turn_id"),
+                        structured=message.get("structured"),
                     )
                     .on_conflict_do_nothing(index_elements=[MessageRow.session_id, MessageRow.seq])
                 )

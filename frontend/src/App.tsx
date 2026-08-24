@@ -15,7 +15,7 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full overflow-hidden bg-white text-neutral-900 antialiased dark:bg-neutral-950 dark:text-neutral-100">
       <Sidebar
         sessionId={state.sessionId}
         open={sidebarOpen}
@@ -35,6 +35,7 @@ export default function App() {
           <ChatView
             messages={state.messages}
             busy={state.busy}
+            sessionId={state.sessionId}
             onSend={send}
             expandedSteps={state.expandedSteps}
             onToggleStep={toggleStep}

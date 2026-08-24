@@ -17,6 +17,7 @@ import type {
   QueuedChatResponse,
   RecentChat,
   SessionHistory,
+  StructuredPayload,
   TriageApiResponse,
 } from '../types';
 
@@ -85,6 +86,9 @@ export interface JobStreamHandlers {
   onSpecialistToken?: (delta: string) => void;
   /** Final-reply deltas. */
   onToken?: (delta: string) => void;
+  /** Structured artifact frame (prescription transcription etc.), emitted
+   * once parsing completes — before synthesis finishes streaming. */
+  onStructured?: (payload: StructuredPayload) => void;
   onResult: (data: ChatResponse) => void;
   onError: (message: string) => void;
   /**
@@ -145,6 +149,14 @@ export function watchJob(jobId: string, handlers: JobStreamHandlers): () => void
   es.addEventListener('token', (e) => {
     const delta = contentFrame(e as MessageEvent);
     if (delta) handlers.onToken?.(delta);
+  });
+
+  es.addEventListener('structured', (e) => {
+    const p = parse(e as MessageEvent) as { type?: string; kind?: string; data?: unknown } | null;
+    if (p && typeof p.kind === 'string' && p.data && typeof p.data === 'object') {
+      const { kind, data } = p;
+      handlers.onStructured?.({ kind, data: data as Record<string, unknown> });
+    }
   });
 
   es.addEventListener('result', (e) => {
@@ -308,7 +320,7 @@ export async function fetchSessionHistory(sessionId: string): Promise<SessionHis
 }
 
 /** GET /v1/sessions/recent — most recently active conversations, newest first. */
-export async function fetchRecentChats(limit = 20): Promise<RecentChat[]> {
+export async function fetchRecentChats(limit = 100): Promise<RecentChat[]> {
   const res = await fetch(apiUrl(`/v1/sessions/recent?limit=${limit}`));
   const data = await json<{ chats: RecentChat[] }>(res);
   return data.chats;
