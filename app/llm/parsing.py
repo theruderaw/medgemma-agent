@@ -9,6 +9,15 @@ _ANSWER_MARKER = re.compile(
     r"(?im)^(?:\*\*)?\s*(?:final\s+)?(?:response|answer|reply)\s*(?:\*\*)?\s*:\s*"
 )
 
+# A standalone routing-decision announcement, e.g.
+#   "No tool call needed."
+# Everything up to and including such a line is router meta-reasoning that
+# must never reach the user. Matched as its own line so ordinary prose
+# mentioning tools mid-sentence survives.
+_TOOL_NARRATION_MARKER = re.compile(
+    r"(?im)^(?:\*\*)?\s*no tool calls?\s+(?:are\s+|is\s+)?(?:needed|required)[.!\s]*(?:\*\*)?\s*$"
+)
+
 
 def extract_answer(content: str) -> str:
     """Extract the model's actual reply from a Qwen3 response.
@@ -17,25 +26,32 @@ def extract_answer(content: str) -> str:
     wraps the reply in `<response>...</response>` tags. When the tags are
     present the inner text is returned.
 
-    Without tags, a deliberation preamble terminated by an explicit
-    ``Response:``/``Answer:``/``Reply:`` marker is stripped — this is how the
-    function-calling router's meta-reasoning ("...should respond directly
-    without triggering the specialist tool") leaks into user-visible replies
-    when it answers general questions inline. Ordinary replies without such a
-    marker are returned unchanged (trimmed).
+    Without tags, two leak classes are stripped: a deliberation preamble
+    terminated by an explicit ``Response:``/``Answer:``/``Reply:`` marker,
+    and a preamble ending in a standalone "no tool call needed" decision
+    announcement — this is how the function-calling router's meta-reasoning
+    leaks into user-visible replies when it answers general questions inline.
+    Ordinary replies without such markers are returned unchanged (trimmed).
     """
     text = content.strip()
     match = re.search(r"<response>(.*?)</response>", text, re.DOTALL)
     if match:
         return match.group(1).strip()
 
-    marker = _ANSWER_MARKER.search(text)
-    if marker:
+    # Strip up to the last leak-class marker that has content after it, so
+    # preambles ending in either class are removed wherever they appear.
+    markers = [*_ANSWER_MARKER.finditer(text), *_TOOL_NARRATION_MARKER.finditer(text)]
+    for marker in sorted(markers, key=lambda m: m.end(), reverse=True):
         remainder = text[marker.end():].strip()
-        # A marker with nothing (or almost nothing) after it is more likely
-        # ordinary prose than a preamble boundary — keep the original text.
-        if len(remainder) >= 1:
+        if remainder:
             return remainder
+
+    # The whole reply is a bare decision announcement ("No tool call
+    # needed.") with no actual content anywhere — return nothing rather than
+    # let meta-reasoning reach the user.
+    if _TOOL_NARRATION_MARKER.search(text):
+        return ""
+
     return text
 
 

@@ -1,5 +1,6 @@
 import type { Online } from '../../hooks/useHealth';
 import Badge from '../ui/Badge';
+import ThemeToggle from '../ui/ThemeToggle';
 
 export type View = 'chat' | 'addons' | 'logs';
 
@@ -24,19 +25,19 @@ const TABS: { id: View; label: string }[] = [
 
 export default function Header({ sessionId, online, view, onView, onMenu }: Props) {
   return (
-    <header className="flex items-center justify-end gap-3 border-b border-ink-800 bg-ink-900/70 px-5 py-3 backdrop-blur">
+    <header className="flex items-center justify-end gap-3 border-b border-neutral-200 bg-white/70 px-5 py-3 backdrop-blur dark:border-neutral-800 dark:bg-neutral-900/70">
       <button
         type="button"
         onClick={onMenu}
         aria-label="Open conversations menu"
-        className="mr-auto cursor-pointer rounded-lg border border-ink-700 p-1.5 text-slate-400 transition-colors hover:text-slate-200 md:hidden"
+        className="mr-auto cursor-pointer rounded-lg border border-neutral-300 p-1.5 text-neutral-500 transition-colors hover:text-neutral-800 md:hidden dark:border-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200"
       >
         <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4" aria-hidden="true">
           <path d="M3 6h14M3 10h14M3 14h14" strokeLinecap="round" />
         </svg>
       </button>
 
-      <nav className="flex rounded-full border border-ink-700 p-0.5" aria-label="Views">
+      <nav className="flex rounded-full border border-neutral-300 p-0.5 dark:border-neutral-700" aria-label="Views">
         {TABS.map((t) => (
           <button
             key={t.id}
@@ -45,8 +46,8 @@ export default function Header({ sessionId, online, view, onView, onMenu }: Prop
             aria-current={view === t.id ? 'page' : undefined}
             className={`cursor-pointer rounded-full px-3 py-1 text-xs transition-colors ${
               view === t.id
-                ? 'bg-accent-900/80 text-accent-300'
-                : 'text-slate-400 hover:text-slate-200'
+                ? 'bg-neutral-900 text-white dark:bg-neutral-100 dark:text-neutral-900'
+                : 'text-neutral-500 hover:text-neutral-800 dark:text-neutral-400 dark:hover:text-neutral-200'
             }`}
           >
             {t.label}
@@ -60,14 +61,12 @@ export default function Header({ sessionId, online, view, onView, onMenu }: Prop
         </Badge>
       )}
 
-      <span className="inline-flex items-center gap-1.5 text-xs text-slate-500">
-        <span
-          className={`h-2 w-2 rounded-full ${
-            online === false ? 'bg-red-500' : 'animate-breathe bg-emerald-400'
-          }`}
-        />
+      <span className="inline-flex items-center gap-1.5 text-xs text-neutral-500 dark:text-neutral-400">
+        <span className={`h-2 w-2 rounded-full ${online === false ? 'bg-neutral-400' : 'bg-neutral-800 dark:bg-neutral-200'}`} />
         {statusLabel(online)}
       </span>
+
+      <ThemeToggle />
     </header>
   );
 }

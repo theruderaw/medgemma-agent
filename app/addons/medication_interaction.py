@@ -8,7 +8,7 @@ an explicit no-data message — never silence, which would read as "no
 interaction exists" (a false negative with real safety consequences).
 
 This addon additionally implements the optional dispatcher capability
-hooks (see ``app/addons/base.py``):
+hooks (see ``app/registry/base.py``):
 
 - ``deterministic_extract`` — regex-over-known-aliases extraction from the
   message + recent history. Returns None when fewer than two known drugs are
@@ -123,6 +123,22 @@ def _load_interactions() -> dict:
     return _load_dataset()[0]
 
 
+def canonical_name(name: str) -> str | None:
+    """Map a brand/alias/generic spelling to the dataset's canonical generic
+    name; None when the dataset does not know the name at all. Shared with
+    other addons (e.g. prescription reading) so lookups stay consistent."""
+    _, aliases = _load_dataset()
+    return aliases.get(name.strip().lower())
+
+
+def lookup_pair(drug_a: str, drug_b: str) -> dict | None:
+    """Curated interaction entry for two canonical drug names, or None when
+    the pair has no dataset row (which callers must surface as an explicit
+    no-data statement — never as silence)."""
+    key = "+".join(sorted((drug_a.lower(), drug_b.lower())))
+    return _load_interactions().get(key)
+
+
 @lru_cache(maxsize=1)
 def _drug_pattern() -> re.Pattern:
     """Single case-insensitive word-boundary alternation over every known
@@ -164,7 +180,7 @@ class MedicationInteractionAddon:
             "Call whenever the patient mentions a medication alongside another "
             "one they take or took — even if only one drug is named in the "
             "latest message and the other comes from earlier in the "
-            "conversation, or if they report taking/adding something new. "
+            "conversation, or if they report taking/adding something new. " 
             "This runs a curated interaction lookup instead of a general "
             "assessment."
         ),
@@ -206,12 +222,14 @@ class MedicationInteractionAddon:
         drug_a, drug_b = sorted(found)[:2]
         return MedicationPair(drug_a=drug_a, drug_b=drug_b)
 
-    def route_trigger(self, text: str, history: list[dict]) -> bool:
+    def route_trigger(self, text: str, history: list[dict], *, has_image: bool = False) -> bool:
         """Conservative deterministic routing claim.
 
         Requires at least one known drug in the *current* message (so ordinary
         conversation is never hijacked by stale history) and two distinct
-        known drugs across message + recent history tail.
+        known drugs across message + recent history tail. ``has_image`` is
+        accepted for dispatcher uniformity but ignored: a text mention of two
+        drugs is enough for this text-based check.
         """
         current = _find_drugs(text)
         if not current:

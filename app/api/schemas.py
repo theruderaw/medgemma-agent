@@ -2,13 +2,14 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from ..core.config import settings
 from ..domain.triage import TriageResult, Urgency
 
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
     session_id: str | None = Field(default=None, min_length=1)
-    temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    temperature: float = Field(default=settings.temperature, ge=0.0, le=2.0)
     image_b64: str | None = Field(default=None, min_length=1)
     image_mime: str | None = Field(default=None, min_length=1)
 
@@ -26,6 +27,10 @@ class ChatResponse(BaseModel):
     urgency: Urgency | None = None
     events: list[AuditEvent] = Field(default_factory=list)
     path: str | None = None
+    # Structured specialist artifact for this turn, when the dispatched addon
+    # produces one (e.g. {"kind": "prescription", "data": {...}}). Separate
+    # from `response` so clients can render it as its own card.
+    structured: dict[str, Any] | None = None
 
 
 class QueuedChatResponse(BaseModel):
@@ -131,6 +136,9 @@ class SessionMessage(BaseModel):
     content: str
     # Pipeline turn that produced this message (None for legacy rows).
     turn_id: str | None = None
+    # Structured specialist artifact attached to this assistant message
+    # (prescription transcription etc.); None for plain messages.
+    structured: dict[str, Any] | None = None
 
 
 class SessionHistoryResponse(BaseModel):

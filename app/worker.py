@@ -69,10 +69,11 @@ def process_turn(
     self,
     message: str,
     session_id: str | None = None,
-    temperature: float = 0.7,
+    temperature: float = settings.temperature,
     image_b64: str | None = None,
     image_sha256: str | None = None,
     image_size_bytes: int | None = None,
+    image_source_pages: int | None = None,
     triage: bool = False,
 ):
     """Run one full chat turn off the HTTP request path.
@@ -80,10 +81,12 @@ def process_turn(
     Calls the same turn-processing path as the API so safety, triage,
     routing, and audit behavior are identical. ``image_b64`` arrives already
     sanitized by the API layer (validated, EXIF-stripped, downscaled); only
-    the hash/size metadata rides alongside it. ``triage`` is the per-turn
-    opt-in from the ``?triage=true`` query param (off by default). Retries
-    only transient model-server failures (unreachable, timeout, 502/503);
-    all other errors propagate as a permanent task failure.
+    the hash/size metadata rides alongside it. ``image_source_pages`` is the
+    source document's page count for PDF uploads (None for images).
+    ``triage`` is the per-turn opt-in from the ``?triage=true`` query param
+    (off by default). Retries only transient model-server failures
+    (unreachable, timeout, 502/503); all other errors propagate as a
+    permanent task failure.
     """
     from .chat.turn import run_chat_turn
     from .core.images import ProcessedImage
@@ -97,6 +100,7 @@ def process_turn(
             mime="image/jpeg",
             size_bytes=image_size_bytes or 0,
             sha256=image_sha256 or "",
+            source_pages=image_source_pages,
         )
 
     structlog.contextvars.bind_contextvars(job_id=job_id, session_id=session_id)
@@ -139,6 +143,15 @@ def process_turn(
         except Exception:
             pass
 
+    async def on_structured(payload: dict) -> None:
+        try:
+            # A named SSE frame (event: structured) carrying the addon's
+            # structured artifact so the UI can render it as its own card
+            # while synthesis is still streaming.
+            await append_event(job_id, {"type": "structured", **payload})
+        except Exception:
+            pass
+
     try:
         result = asyncio.run(
             run_chat_turn(
@@ -150,6 +163,7 @@ def process_turn(
                 on_event=on_event,
                 on_token=on_token,
                 on_specialist_token=on_specialist_token,
+                on_structured=on_structured,
             )
         )
     except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException) as exc:

@@ -2,12 +2,12 @@
 
 A FastAPI chat backend for a clinical-assistant agent, backed by local models
 served via Ollama. Every chat turn runs through a Celery worker (Redis broker),
-streams both the MedGemma clinical note and the final reply token-by-token over
+streams both the clinical assessment and the final reply token-by-token over
 Server-Sent Events, persists sessions/messages/audit to PostgreSQL, and layers
 a deterministic emergency floor plus always-on output guardrails under an
-opt-in triage classifier. Ships with a spec-first integration suite
-(`tests/integration`) that runs a real worker against a fake Ollama HTTP server,
-and a React/Vite chat frontend.
+opt-in triage classifier. Clinical capabilities are pluggable **add-ons**
+registered in a neutral registry — the core runtime never imports them — and a
+React/Vite chat frontend ships alongside.
 
 ## Models
 
@@ -23,7 +23,7 @@ Plus a deterministic, non-model red-flag safety floor that runs on every turn.
 ## Conversation flow
 
 ```
-User → Safety floor → [opt-in triage ?triage=true] → Qwen function-calling router → MedGemma specialist (streamed) → Qwen synthesis (streamed) → SSE result
+User → Safety floor → [opt-in triage ?triage=true] → Qwen function-calling router → routed add-on (streamed) → Qwen synthesis (streamed) → SSE result
 ```
 
 ```mermaid
@@ -80,7 +80,7 @@ JSON-schema `format` to `{"urgency": "emergency" | "urgent" | "routine" |
 
 When enabled, the resulting urgency is injected into routing and synthesis
 context so the reply is calibrated to it, and a `triage_result` pipeline event
-is recorded. Urgency is a typed enum (`Urgency` in `app/triage/parsing.py`);
+is recorded. Urgency is a typed enum (`Urgency` in `app/domain/triage.py`);
 malformed model output raises rather than being silently coerced — the pipeline
 degrades to no triage signal instead of a wrong urgency.
 
@@ -105,23 +105,98 @@ opt-in; the LLM call is skipped deterministically for replies shorter than
 
 ## Routing
 
-Routing is **contextual**: Qwen decides whether a turn needs the clinical
-specialist, using the full conversation rather than keywords. Qwen is given a
-`call_medical_specialist(reason: str)` function via Ollama's OpenAI-compatible
-tool-calling API:
+Routing is **contextual and registry-driven**: Qwen decides whether a turn needs
+a clinical capability by choosing among the tool schemas of every *enabled*
+add-on, using the full conversation rather than keywords. The routing prompt is
+generated from the registry (`build_routing_prompt`), so registering or
+disabling an add-on changes what the router sees with no code changes:
 
-- **Tool called** → MedGemma produces a clinical note from the reason, injected
-  as a system message into Qwen's synthesis context. When the turn carries an
-  image, the note is generated with Ollama's native multimodal `/api/chat`
-  (image attached to the user message).
-- **No tool call** → Qwen replies directly (single model call). **Exception:**
-  if the turn carries an image, the decision is deterministically overridden to
-  `symptom_related` — an attached photo always reaches MedGemma. The override
-  is recorded in the audit trail (`image_override: true`).
+- **Tool called** → that add-on runs its streamed extraction stage (its own
+  model via `model_setting`, its own JSON wire schema via `format_schema`);
+  `parse()` turns the raw output into a typed result and `context_for()` renders
+  it into Qwen's synthesis context for the final reply.
+- **`/tool` mention** → an explicit `/addon_name` token takes the turn off the
+  conversational flow entirely (`path=direct_tool`): the router LLM is skipped
+  (recorded as `slash_override` + `router_skipped`), the optional triage stage
+  and chat history are left out, and only the named add-on runs. Qwen still
+  enunciates the tool result — from the addon's dataset-backed phrasing where
+  provided (`deterministic_reply`), otherwise a focused synthesis over the
+  result alone. Unknown or disabled names are ignored and routing proceeds
+  normally. The emergency floor still runs first — a slash mention can never
+  bypass safety.
+- **No tool call** → Qwen replies directly (single model call). **Exception:** if
+  the turn carries an image, the decision is deterministically overridden to the
+  first *enabled* add-on declaring `accepts_images = True`. Recorded as
+  `image_override`.
+- **GENERAL + keyword trigger** → an add-on's optional conservative
+  `route_trigger` hook can force dispatch (recorded as `keyword_override`),
+  so stale-history drug mentions still reach the interaction checker.
 
-The function-calling router can only produce `general` or `symptom_related`;
-emergencies are owned exclusively by the hardcoded safety check, which runs
-first and short-circuits before any model call.
+The router can only produce `general` or `symptom_related`; emergencies are
+owned exclusively by the hardcoded safety check, which runs first and
+short-circuits before any model call.
+
+## Add-ons
+
+Clinical capabilities live in `app/addons/` as single-file plugins exposing a
+module-level `addon` instance. At boot, `bootstrap_addons()` scans the folder,
+registers every instance in the neutral registry (`app/registry/`), and wires
+the per-session toggle store — the composition root (`app/bootstrap.py`) is the
+only application module allowed to know add-ons exist.
+
+The dependency rule is enforced: `app < registry < addons`. Nothing outside the
+bootstrap may import `app.addons`, and the registry layer imports nothing from
+the application. `make check-arch` fails on violations.
+
+Required contract (structural — no base class): `name`, `tool_schema`,
+`system_prompt`, `safety_profile`, `model_setting`, `format_schema`, plus
+`parse()` and `context_for()`. Optional hooks are probed dynamically:
+`deterministic_extract` / `deterministic_reply` (skip LLM stages),
+`route_trigger` (receives `has_image=` so vision-bound add-ons never claim a
+text-only turn), `image_route_hint` (wins the image override over the
+first-capable fallback), `unavailable_reply` (fault-isolation reply when the
+add-on raises mid-turn), and `accepts_images`. Setting `structured_kind`
+additionally emits the parsed result as a dedicated structured payload: an
+`event: structured` SSE frame, a field on the turn result, and a persisted
+JSONB column on the assistant message — so clients render it as its own card,
+across refreshes.
+
+Four archetypes ship as reference implementations: LLM-stage assessment
+(`clinical_assessment.py`), lightweight classifier (`symptom_triage.py`),
+dataset-backed deterministic lookup (`medication_interaction.py`), and
+vision transcription with derived uncertainty plus deterministic interaction
+cross-checks (`prescription_reader.py`).
+
+To add one: drop a file in `app/addons/`, expose `addon`, restart API + worker.
+Duplicate tool names are rejected loudly at registration.
+
+Per-session toggles are API-managed:
+
+```sh
+curl "http://localhost:8000/v1/addons?session_id=3f2a..."          # list w/ enabled state
+curl -X POST "http://localhost:8000/v1/addons/check_medication_interaction?session_id=3f2a..." \
+  -H "Content-Type: application/json" -d '{"enabled": false}'      # disable for this session
+```
+
+A disabled add-on disappears from the router's offered tools on the very next
+turn; the emergency floor is not an add-on and can never be toggled.
+
+### Prescription reading
+
+`prescription_reader.py` turns an uploaded prescription photo or PDF into a
+structured medication list. Routing is hint-based: prescription language on an
+image-bearing turn dispatches here even when another vision add-on would win
+the first-capable fallback, and its `route_trigger` never claims a text-only
+turn. MedGemma transcribes into an enforced wire contract —
+`{"medications": {"<name>": {strength, dose, frequency, duration,
+instructions}}}` with nulls for anything illegible — and every null field is
+deterministically turned into a clarification ask (never guessed): asks appear
+in the reply, in the structured payload's `clarifications`, and as the amber
+"Needs your input" section of the frontend card. Each extracted drug pair is
+cross-checked against the curated interaction dataset (first 8 medications,
+with an explicit truncation note beyond that); pairs without a dataset entry
+surface a plain "nothing can be concluded either way". Patient/prescriber
+identity visible in the document is never extracted, phrased, or logged.
 
 ### Reply sanitization
 
@@ -140,9 +215,14 @@ Images arrive base64-encoded (`image_b64` + `image_mime`) and pass through a
 sanitization gate (`app/core/images.py`) before anything else sees them:
 
 1. **Decode** — raw base64 or `data:` URLs; size capped at `IMAGE_MAX_BYTES`.
-2. **Mime allowlist** — `IMAGE_ALLOWED_MIME` (default JPEG/PNG/WebP); the
+2. **Mime allowlist** — `IMAGE_ALLOWED_MIME` (default JPEG/PNG/WebP/PDF); the
    declared mime must match the decoded content.
-3. **Pillow verify + re-encode** — structural verification, then a clean JPEG
+3. **PDF first page** — `application/pdf` uploads are rendered to a raster of
+   their **first page only** via pypdfium2 (oversized pages rejected, render
+   scale capped) before continuing through the normal image path. Multi-page
+   documents are audited (`source_pages`) and the limitation is disclosed in
+   the reply.
+4. **Pillow verify + re-encode** — structural verification, then a clean JPEG
    re-encode (quality 85) that strips EXIF metadata (including GPS), flattens
    alpha onto white, and downscales to `IMAGE_MAX_DIMENSION_PX`.
 
@@ -156,35 +236,32 @@ is involved.
 
 ```
 app/
-  main.py            # FastAPI endpoints (/v1/chat, /v1/triage, /v1/jobs, /v1/jobs/{id}/events,
-                     #   /v1/sessions/{id}, /health) + alembic upgrade head on startup
+  main.py            # FastAPI app factory + lifespan (bootstrap_addons, session close)
+  api/
+    routes.py        #   all HTTP endpoints (chat/jobs/triage/addons/sessions/audit/config)
+    schemas.py       #   request/response models
+  chat/
+    turn.py          #   run_chat_turn / run_emergency_turn pipeline
+    routing.py       #   RouteCategory / RouteDecision / parse_tool_calls
+    triage.py        #   run_triage dispatch
+  domain/
+    specialist.py    #   SpecialistResult + parser (shared result contract)
+    triage.py        #   TriageResult / Urgency + parser (shared result contract)
+  registry/          # neutral add-on layer: Addon protocol, ToolSchema, SafetyProfile,
+                     #   in-memory registry, settings-store port (imports no app code)
+  addons/            # pluggable capabilities + curated data (auto-scanned at boot)
+  bootstrap.py       # composition root — sole importer of app.addons
+  persistence/       # SQL adapter implementing the registry settings-store port
   worker.py          # Celery app + process_turn task (token/pipeline event callbacks)
   jobs.py            # Redis job registry + event buffer (mark_enqueued, append_event, broker_ping)
-  core/
-    config.py        #   environment-driven settings (loads .env)
-    db.py            #   async engine + session factory (SQLModel)
-    models.py        #   SQLModel tables: sessions / messages / audit_events
-    context.py       #   trim_context() context-window logic
-    images.py        #   image sanitization gate (Pillow) + persistence
-    logging.py       #   structlog setup (console + app/logs/app.jsonl)
-  api/schemas.py     # ChatRequest / ChatResponse / TriageResponse / JobResponse / AuditEvent
-  audit/logger.py    # append-only audit logger (JSONL file + Postgres, always both)
-  llm/client.py      # LLMClient (OpenAI-compat + native APIs + streaming variants)
-  llm/parsing.py     # extract_answer() + StreamExtractor (live wrapper stripping)
-  safety/            # deterministic red-flag floor + output guardrails
-  triage/            # urgency enum + parsing/validation
-  services/chat.py   # run_chat_turn(triage=...) + run_emergency_turn()
-  services/triage.py # run_triage() dispatch
-  prompts/           # prompts by domain (+ JSON format constraints)
-  routes/            # tool-call parsing + routing categories
-  sessions/
-    base.py          #   SessionStore contract (Postgres is the only implementation)
-    postgres.py      #   relational sessions + append-only messages
-    manager.py       #   SessionManager + singleton
+  audit.py           # append-only audit logger (JSONL file + Postgres, always both)
+  core/              # config, db, models, context trimming, image gate, logging
+  llm/               # LLMClient (OpenAI-compat + native APIs + streaming) + parsing
+  safety/            # deterministic red-flag floor + invariants + output guardrails
+  prompts/           # loader + templates/, composed prompts, JSON wire formats
+  sessions/          # store contract + Postgres implementation + manager
 alembic/             # migration scripts (autogenerated from app/core/models.py)
 frontend/            # React 19 + Vite + Tailwind v4 chat UI
-tests/integration/   # spec-first suite: real Celery worker subprocess vs fake Ollama server,
-                     # live Postgres/Redis required (fail-fast, never skip)
 ```
 
 ## Prerequisites
@@ -216,11 +293,11 @@ Both processes are required for chat: the API enqueues, the worker processes.
 
 ```sh
 make up         # whole stack detached: API + worker + frontend (:5173)
-make api        # uvicorn app.main:app --port 8000 (runs alembic upgrade head)
+make api        # uvicorn app.main:app --port 8000
 make worker     # celery -A app.worker:celery worker --concurrency=1
 make frontend   # vite dev server on :5173 (proxies /v1/* and /health)
 make stop       # stop everything started by make
-make test       # integration suite (needs live Postgres + Redis)
+make check-arch # fail on any app→addons or registry→app import edge
 ```
 
 All targets are non-blocking: processes run detached with pid files and logs
@@ -233,8 +310,10 @@ multiple turns hit Ollama in parallel, but GPU/VRAM is the real ceiling.
 broker is down and jobs will sit enqueued.
 
 The React/Vite UI streams every turn through the job-events SSE channel,
-offers a per-message triage toggle, and ships a Logs page over `GET /v1/audit`
-(module filters, session filter, expandable payloads). `VITE_BACKEND_URL`
+offers a per-message triage toggle, renders structured add-on payloads as
+their own cards (e.g. the prescription transcription card with its
+clarification prompts, restored across refreshes), and ships a Logs page over
+`GET /v1/audit` (module filters, session filter, expandable payloads). `VITE_BACKEND_URL`
 points the dev proxy at a non-default API origin; `VITE_API_BASE_URL` (build
 time, default same-origin) points a production build (`npm run build`) at a
 backend on another origin.
@@ -287,7 +366,8 @@ curl -X POST "http://localhost:8000/v1/chat?triage=true" \
   -d '{"message": "I have a mild headache. Should I worry?"}'
 ```
 
-Attach a photo (goes to the specialist; never to triage):
+Attach a photo (goes to the specialist; never to triage). PDFs are accepted
+too (`image_mime: "application/pdf"` — first page only):
 
 ```sh
 curl -X POST http://localhost:8000/v1/chat \
@@ -315,6 +395,10 @@ An emergency phrase short-circuits synchronously — no queue:
 | `GET` | `/v1/jobs/{job_id}` | Poll a job's status and result. |
 | `GET` | `/v1/jobs/{job_id}/events` | SSE stream: pipeline events, streamed specialist note, streamed reply, terminal `result`/`error`. Replayable via `Last-Event-ID`. |
 | `POST` | `/v1/triage` | Stateless triage classification (text-only model; images stored+audited but not classified). No session, no synthesis. |
+| `GET` | `/v1/addons` | All registered add-ons; pass `?session_id=` for per-session toggle state. |
+| `POST` | `/v1/addons/{name}` | Enable/disable one add-on for a session (`?session_id=` required). |
+| `GET` | `/v1/sessions/recent` | All conversations with last-reply previews (all-chats switcher). |
+| `GET` | `/v1/sessions/{id}/messages` | Full persisted conversation for a session, oldest first (history restore). |
 | `GET` | `/v1/audit` | Read-only audit-trail listing (`?id=<session_id>&limit=`), newest first. |
 | `DELETE` | `/v1/sessions/{session_id}` | Reset a session (clears its history). |
 | `GET` | `/health` | Liveness: `{"api": true, "redis": true}` (unversioned). |
@@ -358,7 +442,7 @@ Errors:
 | Status | When |
 |---|---|
 | `422` | `message` missing/empty, `temperature` out of range, empty-string `session_id`, or the image fails validation (too large, unsupported mime, corrupt data, or `image_b64`/`image_mime` partially supplied). |
-| `410` | A supplied `session_id` is unknown or expired. |
+| `410` | A supplied `session_id` is unknown. |
 | `503` | The job queue is unavailable. |
 
 ### `GET /v1/jobs/{job_id}`
@@ -381,6 +465,7 @@ event; each frame also carries an `id:` line (buffer index) for
 |---|---|---|
 | `pipeline` | `AuditEvent` | An audit event as each stage completes: `image_received`, `triage_result`, `routing_decision`, `specialist_output`, `turn_completed` (or `safety_override`). |
 | `specialist_token` | `{"type": "specialist_token", "content": "..."}` | A delta of the MedGemma clinical note while it is being written (the longest stage) — raw format-constrained JSON streaming live. |
+| `structured` | `{"type": "structured", "kind": "...", "data": {...}}` | A parsed add-on result delivered as its own typed payload (e.g. `kind: "prescription"` card data with `medications` + `clarifications`), emitted before the reply when the dispatched add-on sets `structured_kind`. |
 | `token` | `{"type": "token", "content": "..."}` | A delta of the final reply. |
 | `result` | full response object | Turn finished successfully. |
 | `error` | `{"error": "..."}` | Turn failed. |
@@ -488,12 +573,12 @@ pending from one that never existed — this is also how the API decides between
 ## Session lifecycle
 
 Sessions and messages live in PostgreSQL (append-only messages, full history
-retained — nothing is trimmed from storage):
+retained — nothing is trimmed from storage). Conversations are permanent:
+nothing ages out, so every past chat stays viewable and continuable.
 
 - **Creation** — omitting `session_id` starts a fresh session and returns its id.
-- **Continuation** — passing an existing `session_id` loads its history.
-- **Expiry** — sessions idle out after `SESSION_TIMEOUT_SECONDS` (sliding; every
-  saved turn refreshes it). Unknown/expired ids get `410 Gone`.
+- **Continuation** — passing an existing `session_id` loads its history, no
+  matter how old it is. Unknown ids get `410 Gone`.
 - **Reset** — `DELETE /v1/sessions/{id}` clears history; reuse of the id then
   returns `410`.
 
@@ -517,8 +602,8 @@ alembic revision --autogenerate -m "describe change"
 alembic upgrade head
 ```
 
-The API runs `alembic upgrade head` unconditionally at startup. Tests create
-tables directly via `create_all` and never run Alembic.
+The app does **not** migrate on startup — run `alembic upgrade head` manually
+after pulling schema changes.
 
 ## Audit logging (JSONL file + PostgreSQL)
 
@@ -545,9 +630,20 @@ transaction.
 
 ## Structured logging
 
-All logs go through **structlog**: human-readable console plus one JSON object
-per line in `app/logs/app.jsonl` (rotating). Uvicorn, Celery, and HTTPX events
-share the formatter; `session_id` / `turn_id` / `job_id` are bound per turn/job.
+All logs go through **structlog** and every line is emitted three times:
+human-readable on the terminal (colored only on a real TTY), to the rotating
+`app/logs/app.log` (the same human-readable rendering, always color-free —
+the durable copy of what the terminal shows), and as one JSON object per line
+in `app/logs/app.jsonl` (rotating). Uvicorn, Celery, and HTTPX events share
+the formatter; `session_id` / `turn_id` / `job_id` are bound per turn/job.
+
+The JSONL stream is self-contained: every audit transaction is mirrored into
+it as an `audit.event` record (`module`, `event_type`, full `payload`,
+`session_id`, `turn_id`) and session lifecycle transitions emit their own
+records (`session.created`, `session.loaded`, `session.saved`,
+`session.missing`, `session.reset`, `session.reset_missing`). `app.jsonl`
+alone reconstructs every transaction end-to-end; `audit.jsonl` and Postgres
+remain the dedicated append-only audit sinks.
 
 ## Configuration
 
@@ -563,12 +659,11 @@ Everything lives in `.env.example`; copy to `.env` and adjust:
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama server. |
 | `LLM_TIMEOUT_SECONDS` | `120` | Timeout for model calls. |
 | `IMAGE_MAX_BYTES` | `5242880` | Max accepted upload size (5 MB) pre-sanitization. |
-| `IMAGE_ALLOWED_MIME` | `image/jpeg,image/png,image/webp` | Mime allowlist for uploads. |
+| `IMAGE_ALLOWED_MIME` | `image/jpeg,image/png,image/webp,application/pdf` | Mime allowlist for uploads (PDFs render first page only). |
 | `IMAGE_UPLOAD_DIR` | `app/data/uploads` | Sanitized image persistence directory. |
 | `IMAGE_MAX_DIMENSION_PX` | `1024` | Longest edge after downscale. |
 | `DATABASE_URL` | `postgresql:///medgemma-agent` | Postgres connection (sessions/messages/audit). |
 | `REDIS_URL` | `redis://localhost:6379/0` | Celery broker/result backend + event buffers. |
-| `SESSION_TIMEOUT_SECONDS` | `1800` | Idle timeout per session (sliding). |
 | `MAX_CONTEXT_MESSAGES` | `20` | Messages sent to the model per turn. |
 | `MAX_CONTEXT_CHARS` | `16000` | Char budget for the model context. |
 | `AUDIT_FILE` | `app/logs/audit.jsonl` | Append-only JSONL audit trail. |
@@ -587,23 +682,19 @@ The system prompt pins the assistant's role:
 
 > I'm not a diagnostic tool; for anything urgent, contact emergency services.
 
-## Test
+## Architecture guard
 
 ```sh
-make test    # .venv/bin/pytest tests/integration -q
+make check-arch
 ```
 
-The suite is **spec-first**: tests define target behavior and run against the
-real machinery — an actual Celery worker subprocess consuming the real Redis
-queue, talking HTTP to an in-process fake Ollama server (deterministic canned
-responses at the protocol boundary; no models downloaded), with live Postgres
-and Redis required (missing services fail loudly, never skip). Suite traffic is
-**isolated on Redis db 15**, so it cannot collide with a concurrently running
-dev stack. Coverage spans enqueue/completion flows, router decline,
-permanent-failure mapping, router-deliberation stripping, triage opt-in
-semantics, the emergency floor, output guardrails, postgres session
-persistence/reset, image sanitization→analysis, the standalone triage endpoint,
-the audit read API, and the job-events SSE contract including token streaming.
+`scripts/check_architecture.py` (AST-level) enforces the layering that makes
+add-ons safe to change: no module outside `app/bootstrap.py` may import
+`app.addons`, and nothing under `app/registry/` may import another `app.*`
+package. The registry layer is the stable contract both sides depend on —
+the core runtime dispatches against the `Addon` protocol without ever
+importing a concrete add-on, so adding, editing, or deleting add-ons can
+never ripple into application code.
 
 ## Scope
 

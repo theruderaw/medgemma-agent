@@ -1,3 +1,4 @@
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -37,6 +38,31 @@ PATH_QWEN_DIRECT = "qwen_direct"
 # A routed addon raised mid-turn: the turn completes with the addon's
 # explicit unavailable reply instead of failing (fault isolation boundary).
 PATH_ADDON_UNAVAILABLE = "addon_unavailable"
+# A /tool-pinned turn: standalone tool invocation — no router, no triage,
+# no history-aware synthesis. Qwen enunciates the tool result unless the
+# addon owns deterministic phrasing.
+PATH_DIRECT_TOOL = "direct_tool"
+
+
+def select_image_addon(offered: list, message: str) -> Any | None:
+    """Pick which enabled addon an attached image is forced onto.
+
+    Considers only addons declaring ``accepts_images``. An explicit
+    ``image_route_hint`` claim wins over the first-capable fallback so two
+    image-capable addons never fight silently (e.g. a prescription upload
+    goes to the reader, not the clinical assessment). Returns None when no
+    image-capable addon is enabled — the router's decision then stands.
+    """
+    image_addons = [a for a in offered if getattr(a, "accepts_images", False)]
+    hinted = next(
+        (
+            a
+            for a in image_addons
+            if callable(hint := getattr(a, "image_route_hint", None)) and hint(message)
+        ),
+        None,
+    )
+    return hinted or (image_addons[0] if image_addons else None)
 
 
 @dataclass
@@ -46,6 +72,10 @@ class TurnResult:
     urgency: Urgency | None = None
     events: list[dict] | None = None
     path: str | None = None
+    # Structured specialist artifact for this turn ({"kind": ..., "data": ...})
+    # when the dispatched addon produces one; rendered as its own card by the
+    # frontend and persisted alongside the assistant message.
+    structured: dict | None = None
 
 
 async def run_emergency_turn(
@@ -114,12 +144,13 @@ async def run_chat_turn(
     message: str,
     *,
     session_id: str | None = None,
-    temperature: float = 0.7,
+    temperature: float = settings.temperature,
     image: ProcessedImage | None = None,
     triage: bool = False,
     on_event: Callable[[dict], Awaitable[None]] | None = None,
     on_token: Callable[[str], Awaitable[None]] | None = None,
     on_specialist_token: Callable[[str], Awaitable[None]] | None = None,
+    on_structured: Callable[[dict], Awaitable[None]] | None = None,
 ) -> TurnResult:
     """Execute one full chat turn.
 
@@ -132,15 +163,21 @@ async def run_chat_turn(
 
     When ``image`` is supplied (a sanitized upload), it is persisted and
     audited, triage dispatches to the multimodal vision tier, and an attached
-    image can never be dropped by routing: if the router does not request the
-    specialist, the decision is deterministically overridden so the image
-    always reaches MedGemma.
+    image can never be dropped by routing: if the router does not request an
+    image-capable addon, the decision is deterministically overridden —
+    preferring an enabled addon whose ``image_route_hint`` claims the
+    message (e.g. a prescription upload), falling back to the first
+    image-capable addon. With no image-capable addon enabled there is
+    nothing safe to force it onto and the router's decision stands.
 
     When ``on_event`` is supplied, every audit event is forwarded through it
     as it happens (live pipeline visibility). When ``on_token`` is supplied,
     the final reply is streamed token-by-token. When ``on_specialist_token``
     is supplied, the MedGemma note is likewise streamed while it is generated
-    (the longest stage) instead of blocking silently.
+    (the longest stage) instead of blocking silently. When
+    ``on_structured`` is supplied and the dispatched addon produced a
+    structured artifact, it is forwarded as its own named payload so clients
+    can render it separately from the conversational reply.
     """
     provided_session_id = session_id is not None
     resolved_id = session_id or sessions.new_id()
@@ -173,7 +210,15 @@ async def run_chat_turn(
         stored_message = message
         if image is not None:
             image_path = persist_image(image, turn_id)
-            stored_message = f"{message}\n\n[image attached: {image_path}]"
+            attachment = f"[image attached: {image_path}]"
+            if image.source_pages:
+                # Honest disclosure: only page 1 of a multi-page document
+                # reached the model this turn.
+                attachment += (
+                    f" [PDF with {image.source_pages} pages — only the first "
+                    "page was read]"
+                )
+            stored_message = f"{message}\n\n{attachment}"
         await sessions.append(session, "user", stored_message, turn_id=turn_id)
         if image is not None:
             await record(
@@ -184,6 +229,7 @@ async def run_chat_turn(
                     "sha256": image.sha256,
                     "mime": image.mime,
                     "size_bytes": image.size_bytes,
+                    **({"source_pages": image.source_pages} if image.source_pages else {}),
                 },
             )
 
@@ -221,9 +267,25 @@ async def run_chat_turn(
 
         history = sessions.build_messages(session)
 
+        # Enabled add-ons are resolved up front so an explicit /tool mention
+        # can take the direct-tool path (no router, no triage, no history).
+        offered = await enabled_addons(session_id=resolved_id)
+        offered_tools = [f.tool_schema.as_dict() for f in offered]
+        slash_addon = next(
+            (
+                m.group(1)
+                for m in re.finditer(r"(?:^|\s)/([\w-]+)", message)
+                if m.group(1) in {a.name for a in offered}
+            ),
+            None,
+        )
+        direct_tool = slash_addon is not None
+
         triage_result = None
         triage_context = None
-        if triage:
+        if triage and not direct_tool:
+            # A pinned /tool invocation is standalone intent — the optional
+            # triage stage belongs to the conversational flow only.
             started = time.monotonic()
             triage_result = await run_triage(message)
             triage_ms = int((time.monotonic() - started) * 1000)
@@ -239,73 +301,105 @@ async def run_chat_turn(
                 },
             )
 
-        started = time.monotonic()
-        offered = await enabled_addons(session_id=resolved_id)
-        offered_tools = [f.tool_schema.as_dict() for f in offered]
-        routing_messages = [
-            {"role": "system", "content": build_routing_prompt(offered_tools)}
-        ]
-        if triage_context:
-            routing_messages.append({"role": "system", "content": triage_context})
-        routing_messages += history
-        routing = await llm.chat_with_tools(
-            routing_messages,
-            tools=offered_tools,
-            temperature=temperature,
-            model=settings.model_name,
-        )
-        routing_ms = int((time.monotonic() - started) * 1000)
-        decision = parse_tool_calls(routing.tool_calls)
-        image_override = False
-        keyword_override = False
-        if image is not None and decision.category is not RouteCategory.SYMPTOM_RELATED:
-            # An attached image is clinical evidence, but it may only be
-            # dispatched to an addon that declares image capability. With no
-            # image-capable addon enabled there is nothing safe to force it
-            # onto, so the router's decision stands (the image itself was
-            # already persisted and audited above).
-            image_addon = next(
-                (a for a in offered if getattr(a, "accepts_images", False)), None
+        if direct_tool:
+            # Direct-tool path: the slash pick replaces routing entirely.
+            decision = RouteDecision(
+                RouteCategory.SYMPTOM_RELATED,
+                f"/{slash_addon} requested",
+                addon_name=slash_addon,
             )
-            if image_addon is not None:
-                decision = RouteDecision(
-                    RouteCategory.SYMPTOM_RELATED,
-                    "image attached",
-                    addon_name=image_addon.name,
-                )
-                image_override = True
-        if decision.category is RouteCategory.GENERAL:
-            # Deterministic keyword triggers: an add-on may claim the turn when
-            # its conservative pattern fires (e.g. two known drug names). Only
-            # ever upgrades a GENERAL decision; never overrides the router or
-            # the image override.
-            for candidate in offered:
-                trigger = getattr(candidate, "route_trigger", None)
-                if callable(trigger) and trigger(message, history):
+            await record(
+                "router",
+                "routing_decision",
+                {
+                    "category": decision.category.value,
+                    "reason": decision.reason,
+                    "raw_content": None,
+                    "tool_calls": [],
+                    "tools": addon_names(offered),
+                    "router_skipped": True,
+                    "slash_override": True,
+                    "slash_addon": slash_addon,
+                    "image_override": False,
+                    "keyword_override": False,
+                    "duration_ms": 0,
+                },
+            )
+        else:
+            started = time.monotonic()
+            routing_messages = [
+                {"role": "system", "content": build_routing_prompt(offered_tools)}
+            ]
+            if triage_context:
+                routing_messages.append({"role": "system", "content": triage_context})
+            routing_messages += history
+            routing = await llm.chat_with_tools(
+                routing_messages,
+                tools=offered_tools,
+                temperature=temperature,
+                model=settings.model_name,
+            )
+            routing_ms = int((time.monotonic() - started) * 1000)
+            decision = parse_tool_calls(routing.tool_calls)
+            image_override = False
+            keyword_override = False
+            if image is not None and decision.category is not RouteCategory.SYMPTOM_RELATED:
+                # An attached image is clinical evidence, but it may only be
+                # dispatched to an addon that declares image capability; the
+                # hint-aware selector decides which one. With no image-capable
+                # addon enabled there is nothing safe to force it onto, so the
+                # router's decision stands (the image itself was already
+                # persisted and audited above).
+                hinted = False
+                image_addon = select_image_addon(offered, message)
+                if image_addon is not None:
+                    hinted = callable(
+                        hint := getattr(image_addon, "image_route_hint", None)
+                    ) and bool(hint(message))
+                if image_addon is not None:
                     decision = RouteDecision(
                         RouteCategory.SYMPTOM_RELATED,
-                        "keyword trigger",
-                        addon_name=candidate.name,
+                        f"image attached: {image_addon.name} hint" if hinted else "image attached",
+                        addon_name=image_addon.name,
                     )
-                    keyword_override = True
-                    break
-        await record(
-            "router",
-            "routing_decision",
-            {
-                "category": decision.category.value,
-                "reason": decision.reason,
-                "raw_content": routing.content,
-                "tool_calls": routing.tool_calls,
-                "tools": addon_names(offered),
-                "image_override": image_override,
-                "keyword_override": keyword_override,
-                "duration_ms": routing_ms,
-            },
-        )
+                    image_override = True
+            if decision.category is RouteCategory.GENERAL:
+                # Deterministic keyword triggers: an add-on may claim the turn
+                # when its conservative pattern fires (e.g. two known drug
+                # names). Triggers learn whether an attachment exists so
+                # vision-bound addons (prescription reading) never hijack a
+                # text-only turn. Only ever upgrades a GENERAL decision; never
+                # overrides the router or the image override.
+                for candidate in offered:
+                    trigger = getattr(candidate, "route_trigger", None)
+                    if callable(trigger) and trigger(message, history, has_image=image is not None):
+                        decision = RouteDecision(
+                            RouteCategory.SYMPTOM_RELATED,
+                            "keyword trigger",
+                            addon_name=candidate.name,
+                        )
+                        keyword_override = True
+                        break
+            await record(
+                "router",
+                "routing_decision",
+                {
+                    "category": decision.category.value,
+                    "reason": decision.reason,
+                    "raw_content": routing.content,
+                    "tool_calls": routing.tool_calls,
+                    "tools": addon_names(offered),
+                    "image_override": image_override,
+                    "keyword_override": keyword_override,
+                    "duration_ms": routing_ms,
+                },
+            )
 
         specialist: Any = None
         addon = None
+        # Structured artifact for the turn (None unless an image-capable,
+        # structured-emitting addon was dispatched and succeeded).
+        structured_payload: dict | None = None
         # Resolution failure (router named / override defaulted to an add-on
         # that is not registered) degrades exactly like a runtime fault —
         # never an exception escaping the turn.
@@ -369,6 +463,12 @@ async def run_chat_turn(
                     specialist_context = addon.context_for(
                         specialist, image_analyzed=image is not None
                     )
+                    structured_kind = getattr(addon, "structured_kind", None)
+                    if structured_kind is not None and hasattr(specialist, "to_dict"):
+                        structured_payload = {
+                            "kind": structured_kind,
+                            "data": specialist.to_dict(),
+                        }
                 except Exception as exc:  # noqa: BLE001 - addon faults never kill the turn
                     addon_failed = f"{type(exc).__name__}: {exc}"
             specialist_ms = int((time.monotonic() - started) * 1000)
@@ -408,6 +508,8 @@ async def run_chat_turn(
                         "duration_ms": specialist_ms,
                     },
                 )
+                if structured_payload is not None and on_structured is not None:
+                    await on_structured(structured_payload)
 
                 # Deterministic reply hook: the addon may own the final
                 # wording outright (dataset-backed claims), skipping the
@@ -424,7 +526,14 @@ async def run_chat_turn(
                     messages.append({"role": "system", "content": triage_context})
                 if specialist_context:
                     messages.append({"role": "system", "content": specialist_context})
-                messages += history
+                if direct_tool:
+                    # Direct-tool enunciation: Qwen phrases ONLY the tool
+                    # result for the current request — conversation history
+                    # stays out of the prompt entirely.
+                    clean = re.sub(r"(?:^|\s)/[\w-]+", "", message).strip() or message
+                    messages.append({"role": "user", "content": clean})
+                else:
+                    messages += history
                 started = time.monotonic()
                 if reply_override is not None:
                     text = reply_override
@@ -449,9 +558,14 @@ async def run_chat_turn(
                 else:
                     text = await llm.chat(messages, temperature=temperature, model=settings.model_name)
                 synthesis_ms = int((time.monotonic() - started) * 1000)
-                turn_path = PATH_MEDICAL_SPECIALIST
+                turn_path = PATH_DIRECT_TOOL if direct_tool else PATH_MEDICAL_SPECIALIST
         else:
             text = extract_answer(routing.content)
+            if not text.strip():
+                # The router answered inline but produced only stripped
+                # meta-reasoning — fall back to a minimal neutral line
+                # rather than storing an empty reply.
+                text = "Hi! How can I help you today?"
             synthesis_ms = 0
             turn_path = PATH_QWEN_DIRECT
             if on_token is not None:
@@ -527,7 +641,7 @@ async def run_chat_turn(
                 else:
                     await on_token(f"\n\n{guarded.text}")
             text = guarded.text
-        await sessions.append(session, "assistant", text, turn_id=turn_id)
+        await sessions.append(session, "assistant", text, turn_id=turn_id, structured=structured_payload)
         await sessions.save(session)
         await record(
             "chat",
@@ -559,5 +673,6 @@ async def run_chat_turn(
         urgency=turn_urgency,
         events=events,
         path=turn_path,
+        structured=structured_payload,
     )
 

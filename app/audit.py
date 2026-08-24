@@ -14,6 +14,7 @@ from .core.logging import get_logger
 from .core.models import AuditEventRow
 
 logger = get_logger("app.audit")
+event_logger = get_logger("app.audit.event")
 
 
 def trim_llm_payload(payload: dict[str, Any], cap: int) -> dict[str, Any]:
@@ -98,6 +99,33 @@ class JsonFileAuditLogger(AuditLogger):
             handle.flush()
 
 
+class StructlogAuditLogger(AuditLogger):
+    """Mirrors every audit event into the structlog stream.
+
+    Emits one ``audit.event`` record per transaction so ``app.jsonl`` alone
+    reconstructs the pipeline (alongside the dedicated ``audit.jsonl`` trail
+    and Postgres). Pure in-process emission — nothing to fail.
+    """
+
+    async def append(
+        self,
+        *,
+        module: str,
+        event_type: str,
+        payload: dict[str, Any],
+        session_id: str | None = None,
+        turn_id: str | None = None,
+    ) -> None:
+        event_logger.info(
+            "audit.event",
+            module=module,
+            event_type=event_type,
+            payload=payload,
+            session_id=session_id,
+            turn_id=turn_id,
+        )
+
+
 class PostgresAuditLogger(AuditLogger):
     """Persists audit events to the append-only audit_events table.
 
@@ -168,11 +196,13 @@ class CompositeAuditLogger(AuditLogger):
 def build_audit_logger() -> AuditLogger:
     """Every event lands in the JSONL file and is mirrored to Postgres.
 
-    Both sinks are unconditional: no transaction can run without a durable,
-    queryable audit record.
+    Both durable sinks are unconditional: no transaction can run without a
+    durable, queryable audit record. The structlog mirror additionally streams
+    each event into the unified ``app.jsonl`` / ``app.log`` / console logs.
     """
     return CompositeAuditLogger(
         [
+            StructlogAuditLogger(),
             JsonFileAuditLogger(settings.audit_file, trim_llm_chars=settings.audit_llm_cap_chars),
             PostgresAuditLogger(settings.database_url),
         ]

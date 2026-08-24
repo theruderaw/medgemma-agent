@@ -43,6 +43,29 @@ export interface AuditEvent {
   turn_id?: string | null;
 }
 
+/** Structured specialist artifact — delivered via the `structured` SSE frame,
+ * the final turn result, and persisted history rows. */
+export interface StructuredPayload {
+  kind: 'prescription' | string;
+  data: Record<string, unknown>;
+}
+
+/** One transcribed medication entry (all fields nullable = unreadable). */
+export interface PrescriptionMedication {
+  strength?: string | null;
+  dose?: string | null;
+  frequency?: string | null;
+  duration?: string | null;
+  instructions?: string | null;
+}
+
+/** kind:"prescription" data shape — medications keyed by transcribed name,
+ * plus deterministic clarification prompts for unreadable fields. */
+export interface PrescriptionData {
+  medications: Record<string, PrescriptionMedication>;
+  clarifications?: string[];
+}
+
 export interface ChatResponse {
   session_id: string;
   response: string;
@@ -50,6 +73,8 @@ export interface ChatResponse {
   events: AuditEvent[];
   /** Pipeline path taken this turn (e.g. medical_specialist, emergency_override). */
   path?: string | null;
+  /** Structured artifact for this turn (prescription transcription etc.). */
+  structured?: StructuredPayload | null;
 }
 
 export interface QueuedChatResponse {
@@ -82,6 +107,8 @@ export interface SessionMessage {
   content: string;
   /** Pipeline turn that produced this message (absent on legacy rows). */
   turn_id?: string | null;
+  /** Structured artifact attached to this assistant message. */
+  structured?: StructuredPayload | null;
 }
 
 export interface SessionHistory {

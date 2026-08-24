@@ -17,7 +17,10 @@ class Settings:
     image_max_bytes: int = int(os.getenv("IMAGE_MAX_BYTES", str(5 * 1024 * 1024)))
     image_allowed_mime: tuple[str, ...] = tuple(
         m.strip()
-        for m in os.getenv("IMAGE_ALLOWED_MIME", "image/jpeg,image/png,image/webp").split(",")
+        for m in os.getenv(
+            "IMAGE_ALLOWED_MIME",
+            "image/jpeg,image/png,image/webp,application/pdf",
+        ).split(",")
         if m.strip()
     )
     image_upload_dir: str = os.getenv(
@@ -27,11 +30,11 @@ class Settings:
     image_max_dimension_px: int = int(os.getenv("IMAGE_MAX_DIMENSION_PX", "1024"))
     ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     llm_timeout_seconds: float = float(os.getenv("LLM_TIMEOUT_SECONDS", "120"))
+    temperature: float = float(os.getenv("TEMPERATURE", "0.5"))
     database_url: str = os.getenv("DATABASE_URL", "postgresql:///medgemma-agent")
     audit_file: str = os.getenv("AUDIT_FILE", AUDIT_FILE_DEFAULT)
     audit_llm_cap_chars: int = int(os.getenv("AUDIT_LLM_CAP_CHARS", "1000"))
     redis_url: str = os.getenv("REDIS_URL", "redis://localhost:6379/0")
-    session_timeout_seconds: float = float(os.getenv("SESSION_TIMEOUT_SECONDS", "1800"))
     max_history_messages: int = int(os.getenv("MAX_HISTORY_MESSAGES", "40"))
     max_context_messages: int = int(os.getenv("MAX_CONTEXT_MESSAGES", "20"))
     max_context_chars: int = int(os.getenv("MAX_CONTEXT_CHARS", "16000"))

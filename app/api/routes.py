@@ -1,6 +1,5 @@
 import asyncio
 import json
-import time
 from uuid import uuid4
 
 import httpx
@@ -11,12 +10,7 @@ from ..audit import audit, trim_llm_payload
 from ..chat.triage import run_triage
 from ..chat.turn import run_emergency_turn
 from ..core.config import settings
-from ..core.images import (
-    ImageValidationError,
-    ProcessedImage,
-    decode_and_sanitize,
-    persist_image,
-)
+from ..core.images import persist_image
 from ..core.logging import get_logger
 from ..domain.triage import TriageResult, Urgency
 from ..jobs import broker_ping, mark_enqueued, read_events
@@ -31,6 +25,7 @@ from ..registry import (
 from ..safety import detect_emergency
 from ..sessions import SessionExpiredError, sessions
 from ..worker import process_turn
+from .images import image_meta, prepare_image
 from .schemas import (
     AddonInfo,
     AddonListResponse,
@@ -40,7 +35,6 @@ from .schemas import (
     AuditRecord,
     ChatRequest,
     ChatResponse,
-    ImageMeta,
     JobResponse,
     QueuedChatResponse,
     RecentChat,
@@ -78,33 +72,6 @@ async def app_config() -> AppConfigResponse:
     )
 
 
-def _prepare_image(image_b64: str | None, image_mime: str | None) -> ProcessedImage | None:
-    """Validate an optional upload into a sanitized ProcessedImage.
-
-    Raises 422 when validation fails or only one of the two fields is given.
-    """
-    if image_b64 is None and image_mime is None:
-        return None
-    if image_b64 is None or image_mime is None:
-        raise HTTPException(
-            status_code=422,
-            detail="image_b64 and image_mime must be provided together",
-        )
-    try:
-        return decode_and_sanitize(image_b64, image_mime)
-    except ImageValidationError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
-
-
-def _image_meta(image: ProcessedImage) -> ImageMeta:
-    return ImageMeta(
-        path=image.path or "",
-        sha256=image.sha256,
-        mime=image.mime,
-        size_bytes=image.size_bytes,
-    )
-
-
 @router.post("/v1/triage", response_model=TriageResponse)
 async def triage(request: TriageRequest) -> TriageResponse:
     """Stateless structured triage over text plus an optional image.
@@ -115,11 +82,11 @@ async def triage(request: TriageRequest) -> TriageResponse:
     and audited but never influence urgency. Never mutates session state.
     """
     turn_id = uuid4().hex
-    image = _prepare_image(request.image_b64, request.image_mime)
-    image_meta = None
+    image = await prepare_image(request.image_b64, request.image_mime)
+    meta = None
     if image is not None:
         persist_image(image, turn_id)
-        image_meta = _image_meta(image)
+        meta = image_meta(image)
         await audit.append(
             module="image",
             event_type="image_received",
@@ -128,6 +95,7 @@ async def triage(request: TriageRequest) -> TriageResponse:
                 "sha256": image.sha256,
                 "mime": image.mime,
                 "size_bytes": image.size_bytes,
+                **({"source_pages": image.source_pages} if image.source_pages else {}),
             },
             turn_id=turn_id,
         )
@@ -146,7 +114,7 @@ async def triage(request: TriageRequest) -> TriageResponse:
             turn_id=turn_id,
         )
         logger.info("triage.completed", source="rules", urgency=result.urgency.value)
-        return TriageResponse.from_result(result, model="hardcoded_rules", source="rules", image=image_meta)
+        return TriageResponse.from_result(result, model="hardcoded_rules", source="rules", image=meta)
 
     try:
         result = await run_triage(request.message)
@@ -167,7 +135,7 @@ async def triage(request: TriageRequest) -> TriageResponse:
         turn_id=turn_id,
     )
     logger.info("triage.completed", source=source, urgency=result.urgency.value)
-    return TriageResponse.from_result(result, model=model, source=source, image=image_meta)
+    return TriageResponse.from_result(result, model=model, source=source, image=meta)
 
 
 @router.post("/v1/chat")
@@ -205,7 +173,7 @@ async def queued_chat(request: ChatRequest, triage: bool = False) -> QueuedChatR
         )
 
     try:
-        image = _prepare_image(request.image_b64, request.image_mime)
+        image = await prepare_image(request.image_b64, request.image_mime)
         if request.session_id is None:
             session_id = sessions.new_id()
             session = await sessions.load_or_create(session_id, must_exist=False)
@@ -228,6 +196,7 @@ async def queued_chat(request: ChatRequest, triage: bool = False) -> QueuedChatR
                 "image_b64": image.b64 if image else None,
                 "image_sha256": image.sha256 if image else None,
                 "image_size_bytes": image.size_bytes if image else None,
+                "image_source_pages": image.source_pages if image else None,
                 "triage": triage,
             },
         )
@@ -336,10 +305,10 @@ async def _stream_job_events(job_id: str, *, start: int = 0):
                     event = json.loads(raw)
                 except json.JSONDecodeError:
                     event = None
-                # Buffered events carry a "type" for token streams; pipeline
-                # events (audit-shaped) stream under their own name.
+                # Buffered events carry a "type" for token/structured streams;
+                # pipeline events (audit-shaped) stream under their own name.
                 name = "pipeline"
-                if isinstance(event, dict) and event.get("type") in ("token", "specialist_token"):
+                if isinstance(event, dict) and event.get("type") in ("token", "specialist_token", "structured"):
                     name = event["type"]
                 yield f"id: {start + i}\nevent: {name}\ndata: {raw}\n\n"
             start = length
@@ -354,7 +323,7 @@ async def _stream_job_events(job_id: str, *, start: int = 0):
                     except json.JSONDecodeError:
                         event = None
                     name = "pipeline"
-                    if isinstance(event, dict) and event.get("type") in ("token", "specialist_token"):
+                    if isinstance(event, dict) and event.get("type") in ("token", "specialist_token", "structured"):
                         name = event["type"]
                     yield f"id: {start + i}\nevent: {name}\ndata: {raw}\n\n"
                 start = length
@@ -433,12 +402,11 @@ async def toggle_addon(name: str, body: AddonToggleRequest, session_id: str) -> 
 
 @router.get("/v1/sessions/recent", response_model=RecentChatsResponse)
 async def recent_sessions(limit: int = 20) -> RecentChatsResponse:
-    """Most recently active conversations, newest first.
+    """All conversations ever started, newest activity first.
 
-    Backs the frontend's recent-chats switcher: each entry carries the last
-    assistant message as a preview so conversations are recognizable. Sessions
-    past the store's expiry timeout are excluded, mirroring what a direct
-    session read would return.
+    Backs the frontend's chat switcher: each entry carries the last assistant
+    message as a preview so conversations are recognizable. Conversations are
+    permanent — nothing ages out of this listing.
     """
     if not 1 <= limit <= 100:
         raise HTTPException(status_code=422, detail="limit must be between 1 and 100")
@@ -448,12 +416,10 @@ async def recent_sessions(limit: int = 20) -> RecentChatsResponse:
     from ..core.db import SessionLocal
     from ..core.models import MessageRow, SessionRow
 
-    cutoff = time.time() - settings.session_timeout_seconds
     async with SessionLocal() as db:
         session_rows = (
             await db.execute(
                 select(SessionRow)
-                .where(SessionRow.last_activity >= cutoff)
                 .order_by(SessionRow.last_activity.desc())
                 .limit(limit)
             )
@@ -511,7 +477,12 @@ async def session_history(session_id: str) -> SessionHistoryResponse:
         created_at=session.created_at,
         last_activity=session.last_activity,
         messages=[
-            {"role": m["role"], "content": m["content"], "turn_id": m.get("turn_id")}
+            {
+                "role": m["role"],
+                "content": m["content"],
+                "turn_id": m.get("turn_id"),
+                "structured": m.get("structured"),
+            }
             for m in session.messages
             if m.get("role") in ("user", "assistant")
         ],
