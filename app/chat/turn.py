@@ -147,6 +147,7 @@ async def run_chat_turn(
     temperature: float = settings.temperature,
     image: ProcessedImage | None = None,
     triage: bool = False,
+    slash_addon: str | None = None,
     on_event: Callable[[dict], Awaitable[None]] | None = None,
     on_token: Callable[[str], Awaitable[None]] | None = None,
     on_specialist_token: Callable[[str], Awaitable[None]] | None = None,
@@ -271,14 +272,19 @@ async def run_chat_turn(
         # can take the direct-tool path (no router, no triage, no history).
         offered = await enabled_addons(session_id=resolved_id)
         offered_tools = [f.tool_schema.as_dict() for f in offered]
-        slash_addon = next(
-            (
-                m.group(1)
-                for m in re.finditer(r"(?:^|\s)/([\w-]+)", message)
-                if m.group(1) in {a.name for a in offered}
-            ),
-            None,
-        )
+        offered_names = {a.name for a in offered}
+        if slash_addon is not None and slash_addon not in offered_names:
+            # A stale or disabled pin never routes — fall back to text scan.
+            slash_addon = None
+        if slash_addon is None:
+            slash_addon = next(
+                (
+                    m.group(1)
+                    for m in re.finditer(r"(?:^|\s)/([\w-]+)", message)
+                    if m.group(1) in offered_names
+                ),
+                None,
+            )
         direct_tool = slash_addon is not None
 
         triage_result = None

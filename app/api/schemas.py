@@ -12,6 +12,9 @@ class ChatRequest(BaseModel):
     temperature: float = Field(default=settings.temperature, ge=0.0, le=2.0)
     image_b64: str | None = Field(default=None, min_length=1)
     image_mime: str | None = Field(default=None, min_length=1)
+    # Tool pinned via the composer's slash menu — sent out-of-band so the
+    # picker never has to leave "/name" inside the message text itself.
+    slash_addon: str | None = Field(default=None, min_length=1)
 
 
 class AuditEvent(BaseModel):

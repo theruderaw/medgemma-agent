@@ -65,11 +65,18 @@ export async function enqueueTurn(
   sessionId: string | null,
   image?: AttachedImage,
   triage = false,
+  /** Tool picked from the slash menu — sent as slash_addon, not in the text. */
+  tool?: string,
 ): Promise<EnqueueResult> {
   const res = await fetch(apiUrl(`/v1/chat${triage ? '?triage=true' : ''}`), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ message, session_id: sessionId, ...imageFields(image) }),
+    body: JSON.stringify({
+      message,
+      session_id: sessionId,
+      ...imageFields(image),
+      ...(tool ? { slash_addon: tool } : {}),
+    }),
   });
   if (res.status === 202) {
     return { kind: 'queued', data: await json<QueuedChatResponse>(res) };
@@ -330,4 +337,13 @@ export async function fetchRecentChats(limit = 100): Promise<RecentChat[]> {
 export async function fetchConfig(): Promise<AppConfig> {
   const res = await fetch(apiUrl('/v1/config'));
   return json<AppConfig>(res);
+}
+
+/**
+ * GET /v1/images/{turnId} — the sanitized upload persisted for one pipeline
+ * turn. Returns a URL (not a fetch) so <img> tags can load it directly; the
+ * backend deletes the file when its session is deleted.
+ */
+export function imageUrl(turnId: string): string {
+  return apiUrl(`/v1/images/${encodeURIComponent(turnId)}`);
 }

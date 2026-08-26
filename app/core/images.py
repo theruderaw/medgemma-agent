@@ -2,6 +2,7 @@ import base64
 import binascii
 import hashlib
 import io
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -195,3 +196,28 @@ def persist_image(image: ProcessedImage, turn_id: str) -> str:
     image.path = f"{upload_dir.name}/{filename}"
     logger.info("image.persisted", path=image.path, sha256=image.sha256, size_bytes=image.size_bytes)
     return image.path
+
+
+# Audit payloads only ever carry names minted by persist_image; anything else
+# is rejected so a tampered audit row cannot delete outside the store.
+_UPLOAD_NAME_RE = re.compile(r"^uploads/[0-9a-f]{32}\.jpg$")
+
+
+def delete_upload(rel_path: str) -> bool:
+    """Delete a stored upload by its audit-relative path (``uploads/<id>.jpg``).
+
+    Returns True when a file was removed; False for malformed paths or
+    already-missing files, so callers can sweep best-effort without failing.
+    """
+    if not _UPLOAD_NAME_RE.fullmatch(rel_path):
+        return False
+    target = Path(settings.image_upload_dir) / Path(rel_path).name
+    try:
+        target.unlink()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        logger.warning("image.delete_failed", path=rel_path, error=str(exc))
+        return False
+    logger.info("image.deleted", path=rel_path)
+    return True

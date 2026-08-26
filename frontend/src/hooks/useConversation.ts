@@ -4,6 +4,7 @@ import {
   enqueueTurn,
   fetchAuditEvents,
   fetchSessionHistory,
+  imageUrl,
   pollUntilDone,
   watchJob,
 } from '../lib/api';
@@ -234,6 +235,10 @@ function groupEventsByTurn(records: Awaited<ReturnType<typeof fetchAuditEvents>>
   return byTurn;
 }
 
+// The backend appends this marker to a user message that rode with an upload;
+// the file itself is served by GET /v1/images/{turnId}.
+const IMAGE_ATTACH_RE = /\s*\[image attached: uploads\/([0-9a-f]{32})\.jpg\]/;
+
 // ---------------------------------------------------------------------------
 // Hook
 
@@ -265,14 +270,18 @@ export function useConversation() {
         fetchAuditEvents({ id: sessionId, limit: 500 }).catch(() => []),
       ]);
       const byTurn = groupEventsByTurn(records);
-      const messages: ChatMessage[] = history.messages.map((m) => ({
-        id: freshId(),
-        role: m.role,
-        text: m.content,
-        turnId: m.turn_id ?? null,
-        structured: m.structured ?? null,
-        events: m.turn_id ? byTurn.get(m.turn_id) : undefined,
-      }));
+      const messages: ChatMessage[] = history.messages.map((m) => {
+        const attached = m.content.match(IMAGE_ATTACH_RE);
+        return {
+          id: freshId(),
+          role: m.role,
+          text: attached ? m.content.replace(IMAGE_ATTACH_RE, '').trimEnd() : m.content,
+          turnId: m.turn_id ?? null,
+          structured: m.structured ?? null,
+          events: m.turn_id ? byTurn.get(m.turn_id) : undefined,
+          imagePreview: attached ? imageUrl(attached[1]) : undefined,
+        };
+      });
       if (messages.length) dispatch({ type: 'history_loaded', messages });
       return true;
     } catch (err) {
@@ -298,7 +307,7 @@ export function useConversation() {
   }, []);
 
   const send = useCallback(
-    async (text: string, image?: AttachedImage, triage = false) => {
+    async (text: string, image?: AttachedImage, triage = false, tool?: string) => {
       const trimmed = text.trim();
       if (!trimmed || state.busy) return;
 
@@ -326,7 +335,7 @@ export function useConversation() {
       };
 
       try {
-        const outcome = await enqueueTurn(trimmed, state.sessionId, image, triage);
+        const outcome = await enqueueTurn(trimmed, state.sessionId, image, triage, tool);
 
         // Emergency floor matched: the full response arrived synchronously.
         if (outcome.kind === 'sync') {

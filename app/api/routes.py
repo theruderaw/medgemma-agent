@@ -1,16 +1,18 @@
 import asyncio
 import json
+import re
+from pathlib import Path
 from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, HTTPException, Request, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from ..audit import audit, trim_llm_payload
 from ..chat.triage import run_triage
 from ..chat.turn import run_emergency_turn
 from ..core.config import settings
-from ..core.images import persist_image
+from ..core.images import delete_upload, persist_image
 from ..core.logging import get_logger
 from ..domain.triage import TriageResult, Urgency
 from ..jobs import broker_ping, mark_enqueued, read_events
@@ -198,6 +200,7 @@ async def queued_chat(request: ChatRequest, triage: bool = False) -> QueuedChatR
                 "image_size_bytes": image.size_bytes if image else None,
                 "image_source_pages": image.source_pages if image else None,
                 "triage": triage,
+                "slash_addon": request.slash_addon,
             },
         )
         await mark_enqueued(task.id)
@@ -489,18 +492,62 @@ async def session_history(session_id: str) -> SessionHistoryResponse:
     )
 
 
+@router.get("/v1/images/{turn_id}")
+async def get_image(turn_id: str) -> FileResponse:
+    """Serve a persisted upload (sanitized JPEG) by its pipeline turn id.
+
+    Uploads are stored as ``IMAGE_UPLOAD_DIR/<turn_id>.jpg``; the strict
+    hex-id check doubles as path-traversal protection.
+    """
+    if re.fullmatch(r"[0-9a-f]{32}", turn_id) is None:
+        raise HTTPException(status_code=404, detail="Image not found")
+    path = Path(settings.image_upload_dir) / f"{turn_id}.jpg"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Image not found")
+    return FileResponse(path, media_type="image/jpeg", filename=f"{turn_id}.jpg")
+
+
+async def _delete_session_images(session_id: str) -> int:
+    """Remove every upload a session received (best-effort file sweep).
+
+    The audit trail is the index: each ``image_received`` row carries the
+    upload's relative path. Files are unlinked after the session rows are
+    gone, so a crash mid-sweep only leaks files, never live references.
+    """
+    from sqlalchemy import select
+
+    from ..core.db import SessionLocal
+    from ..core.models import AuditEventRow
+
+    stmt = select(AuditEventRow).where(
+        AuditEventRow.session_id == session_id,
+        AuditEventRow.module == "image",
+        AuditEventRow.event_type == "image_received",
+    )
+    async with SessionLocal() as db:
+        rows = (await db.execute(stmt)).scalars().all()
+
+    deleted = 0
+    for row in rows:
+        rel = (row.payload or {}).get("path")
+        if isinstance(rel, str) and delete_upload(rel):
+            deleted += 1
+    return deleted
+
+
 @router.delete("/v1/sessions/{session_id}", status_code=204)
 async def reset_session(session_id: str) -> None:
     removed = await sessions.reset(session_id)
     if not removed:
         raise HTTPException(status_code=404, detail="Session not found")
+    deleted_images = await _delete_session_images(session_id)
     await audit.append(
         module="session",
         event_type="session_reset",
         payload={"session_id": session_id},
         session_id=session_id,
     )
-    logger.info("session.reset", session_id=session_id)
+    logger.info("session.reset", session_id=session_id, images_deleted=deleted_images)
 
 
 @router.get("/v1/audit", response_model=AuditListResponse)

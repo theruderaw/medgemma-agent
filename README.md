@@ -9,6 +9,21 @@ opt-in triage classifier. Clinical capabilities are pluggable **add-ons**
 registered in a neutral registry — the core runtime never imports them — and a
 React/Vite chat frontend ships alongside.
 
+## Status
+
+Development is **complete**. The project works as a **proof-of-concept** and
+rudimentary implementation — it is far from a production-level project.
+
+Model findings from development:
+
+- The currently advised models **underperform in benchmarks**.
+- Accurate handwriting reading (required for prescription transcription)
+  demands a **substantial increase in compute**.
+- **Qwen3-VL was benchmarked but did not show satisfactory results.**
+- Language models work as expected and produce **no false negatives**; the
+  remaining false positives are expected to be resolved with a larger context
+  size and something like a 9B model.
+
 ## Models
 
 | Model | Env var | Role |
