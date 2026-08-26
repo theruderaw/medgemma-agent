@@ -75,6 +75,7 @@ def process_turn(
     image_size_bytes: int | None = None,
     image_source_pages: int | None = None,
     triage: bool = False,
+    slash_addon: str | None = None,
 ):
     """Run one full chat turn off the HTTP request path.
 
@@ -160,6 +161,7 @@ def process_turn(
                 temperature=temperature,
                 image=image,
                 triage=triage,
+                slash_addon=slash_addon,
                 on_event=on_event,
                 on_token=on_token,
                 on_specialist_token=on_specialist_token,
